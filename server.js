@@ -16,28 +16,36 @@ app.get("/", (_req, res) => {
 });
 
 /**
- * POST /extract-text
- * Body JSON: { pdf_url: "https://..." }
- * Headers: x-service-secret: <segreto opzionale>
+ * POST /parse
+ * Body JSON: { url: "https://..." }
+ * Headers: x-psigo-secret: <segreto opzionale>
+ *
+ * Questo è l'endpoint chiamato dalla Edge Function filter-bando-pdf-keywords.
  */
-app.post("/extract-text", async (req, res) => {
+app.post("/parse", async (req, res) => {
   try {
     // 🔐 Controllo semplice di autenticazione (tra Edge Function e servizio)
-    const auth = req.headers["x-service-secret"];
+    const auth = req.headers["x-psigo-secret"];
     if (SERVICE_SECRET && auth !== SERVICE_SECRET) {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
 
-    const { pdf_url } = req.body || {};
-    if (!pdf_url || typeof pdf_url !== "string") {
-      return res.status(400).json({ ok: false, error: "Missing pdf_url" });
+    const { url } = req.body || {};
+    if (!url || typeof url !== "string") {
+      return res.status(400).json({ ok: false, error: "Missing url" });
     }
 
-    console.log("[psigo-pdf-service] Fetching PDF:", pdf_url);
+    console.log("[psigo-pdf-service] Fetching PDF:", url);
 
     // Scarica il PDF
-    const response = await fetch(pdf_url);
+    const response = await fetch(url);
     if (!response.ok) {
+      const errText = await response.text().catch(() => "");
+      console.error(
+        "[psigo-pdf-service] Failed to fetch PDF:",
+        response.status,
+        errText.slice(0, 300)
+      );
       return res.status(400).json({
         ok: false,
         error: `Failed to fetch PDF: HTTP ${response.status}`
