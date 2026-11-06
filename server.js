@@ -9,7 +9,7 @@ const PORT = process.env.PORT || 3000;
 const SERVICE_SECRET = process.env.PDF_SERVICE_SECRET || "";
 const FETCH_TIMEOUT_MS = 25000;
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
-const MAX_INLINE_PDF_BYTES = 10 * 1024 * 1024; // safe cap for trusted base64 input
+const MAX_INLINE_PDF_BYTES = 6 * 1024 * 1024; // base64 fits existing 10mb JSON limit
 
 /**
  * GET /  → per testare che il servizio risponde
