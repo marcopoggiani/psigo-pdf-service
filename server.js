@@ -9,6 +9,7 @@ const PORT = process.env.PORT || 3000;
 const SERVICE_SECRET = process.env.PDF_SERVICE_SECRET || "";
 const FETCH_TIMEOUT_MS = 25000;
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
+const MAX_INLINE_PDF_BYTES = 10 * 1024 * 1024; // safe cap for trusted base64 input
 
 /**
  * GET /  → per testare che il servizio risponde
@@ -155,6 +156,7 @@ async function downloadPdf(url, referer = "") {
  * Body JSON: {
  *   url: "https://...",
  *   referer?: "https://pagina-che-contiene-il-link/..."
+ *   pdf_base64?: string // alternative when the source blocks Render egress
  * }
  * Headers: x-psigo-secret: <segreto opzionale>
  *
@@ -167,17 +169,38 @@ app.post("/parse", async (req, res) => {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
 
-    const { url, referer = "" } = req.body || {};
-    if (!url || typeof url !== "string" || !isHttpUrl(url)) {
+    const { url, referer = "", pdf_base64 } = req.body || {};
+    const hasInline = pdf_base64 !== undefined && pdf_base64 !== null;
+    if (hasInline && !SERVICE_SECRET) {
+      return res.status(503).json({ ok: false, error: "Inline PDF requires PDF_SERVICE_SECRET" });
+    }
+    if (hasInline && (url !== undefined || referer !== "")) {
+      return res.status(400).json({ ok: false, error: "Choose either url or pdf_base64" });
+    }
+    if (!hasInline && (!url || typeof url !== "string" || !isHttpUrl(url))) {
       return res.status(400).json({ ok: false, error: "Missing or invalid url" });
     }
-    if (referer && (typeof referer !== "string" || !isHttpUrl(referer))) {
+    if (!hasInline && referer && (typeof referer !== "string" || !isHttpUrl(referer))) {
       return res.status(400).json({ ok: false, error: "Invalid referer" });
     }
-
-    console.log("[psigo-pdf-service] Fetching PDF:", url);
-
-    const downloaded = await downloadPdf(url, referer);
+    let downloaded;
+    if (hasInline) {
+      if (typeof pdf_base64 !== "string" ||
+          pdf_base64.length > Math.ceil(MAX_INLINE_PDF_BYTES * 4 / 3) + 8 ||
+          pdf_base64.length < 16 ||
+          !/^[A-Za-z0-9+/]+={0,2}$/.test(pdf_base64)) {
+        return res.status(400).json({ ok: false, error: "Invalid or oversized inline PDF" });
+      }
+      const buffer = Buffer.from(pdf_base64, "base64");
+      if (buffer.length < 5 || buffer.length > MAX_INLINE_PDF_BYTES ||
+          buffer.subarray(0, 5).toString("ascii") !== "%PDF-") {
+        return res.status(400).json({ ok: false, error: "Inline payload is not a valid PDF" });
+      }
+      downloaded = { buffer, contentType: "application/pdf", finalUrl: null, fetchMode: "trusted_inline_base64" };
+    } else {
+      console.log("[psigo-pdf-service] Fetching PDF:", url);
+      downloaded = await downloadPdf(url, referer);
+    }
 
     const data = await pdf(downloaded.buffer);
 
@@ -202,7 +225,7 @@ app.post("/parse", async (req, res) => {
       fetch: {
         mode: downloaded.fetchMode,
         contentType: downloaded.contentType || null,
-        finalUrl: downloaded.finalUrl || url,
+        finalUrl: downloaded.finalUrl || null,
       },
     });
   } catch (err) {
