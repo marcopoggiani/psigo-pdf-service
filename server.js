@@ -325,7 +325,7 @@ async function frosinoneVerifiedAgent() {
   const rootIsTrusted = tls.rootCertificates.some((pem) => {
     try {
       const root = new X509Certificate(pem);
-      return root.checkIssued(issuer) && issuer.verify(root.publicKey);
+      return issuer.checkIssued(root) && issuer.verify(root.publicKey);
     } catch { return false; }
   });
   if (!rootIsTrusted || !issuer.ca) {
