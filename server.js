@@ -280,10 +280,10 @@ function inspectFrosinoneCertificate() {
 // We fetch the issuer from the certificate AIA and verify its signature against
 // a ROOT ALREADY TRUSTED by Node. This is not a TLS verification bypass.
 // The resulting agent still verifies the server hostname and leaf certificate.
-let validatedFrosinoneIssuer = null;
+let validatedFrosinoneIssuers = null;
 async function frosinoneVerifiedAgent() {
-  if (validatedFrosinoneIssuer) {
-    return new https.Agent({ ca: [...tls.rootCertificates, validatedFrosinoneIssuer] });
+  if (validatedFrosinoneIssuers) {
+    return new https.Agent({ca: [...tls.rootCertificates, ...validatedFrosinoneIssuers]});
   }
   const peer = await new Promise((resolve, reject) => {
     const socket = tls.connect({
@@ -300,39 +300,49 @@ async function frosinoneVerifiedAgent() {
       reject(new Error("issuer_probe_timeout"));
     });
   });
-  const aiaRaw = String(peer?.infoAccess?.["CA Issuers - URI"] || "");
-  const aiaUrl = aiaRaw.match(/https?:\/\/cacerts\.digicert\.com\/[A-Za-z0-9_.-]+\.crt/i)?.[0];
-  if (!aiaUrl) throw new Error("trusted_digicert_issuer_url_missing");
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), 7000);
-  let der;
-  try {
-    const response = await fetch(aiaUrl, {
-      redirect: "error", signal: controller.signal,
-      headers: { Accept: "application/pkix-cert,application/octet-stream" },
-    });
-    if (!response.ok ||
-        Number(response.headers.get("content-length") || 0) > 100000) {
-      throw new Error("issuer_download_failed");
-    }
-    der = Buffer.from(await response.arrayBuffer());
-    if (der.length > 100000 || der.length < 250)
-      throw new Error("issuer_certificate_invalid_size");
-  } finally {
-    clearTimeout(timer);
-  }
-  const issuer = new X509Certificate(der);
-  const rootIsTrusted = tls.rootCertificates.some((pem) => {
+
+  const trustedRoots = tls.rootCertificates.map((pem) => new X509Certificate(pem));
+  let current = new X509Certificate(peer.raw);
+  let accessInfo = String(peer?.infoAccess?.["CA Issuers - URI"] || "");
+  const issuers = [];
+  let chainTrusted = false;
+  // An origin may omit MULTIPLE intermediate certificates. Stop after
+  // a strictly bounded chain, and require a cryptographic path to a
+  // root already in Node's built-in trusted root store.
+  for (let depth = 0; depth < 4; depth++) {
+    const aiaUrl = accessInfo.match(/https?:\/\/cacerts\.digicert\.com\/[A-Za-z0-9_.-]+\.crt/i)?.[0];
+    if (!aiaUrl) throw new Error("trusted_digicert_issuer_url_missing");
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), 7000);
+    let der;
     try {
-      const root = new X509Certificate(pem);
-      return issuer.checkIssued(root) && issuer.verify(root.publicKey);
-    } catch { return false; }
-  });
-  if (!rootIsTrusted || !issuer.ca) {
-    throw new Error("issuer_not_signed_by_trusted_root");
+      const response = await fetch(aiaUrl, {
+        redirect: "error", signal: controller.signal,
+        headers: {Accept: "application/pkix-cert,application/octet-stream"},
+      });
+      if (!response.ok || Number(response.headers.get("content-length") || 0) > 100000)
+        throw new Error("issuer_download_failed");
+      der = Buffer.from(await response.arrayBuffer());
+      if (der.length < 250 || der.length > 100000)
+        throw new Error("issuer_certificate_invalid_size");
+    } finally {
+      clearTimeout(timer);
+    }
+    const issuer = new X509Certificate(der);
+    if (!issuer.ca || !current.checkIssued(issuer) ||
+        !current.verify(issuer.publicKey)) {
+      throw new Error("issuer_signature_chain_invalid");
+    }
+    issuers.push(issuer.toString());
+    chainTrusted = trustedRoots.some((root) =>
+      issuer.checkIssued(root) && issuer.verify(root.publicKey));
+    if (chainTrusted) break;
+    current = issuer;
+    accessInfo = issuer.infoAccess || "";
   }
-  validatedFrosinoneIssuer = issuer.toString();
-  return new https.Agent({ ca: [...tls.rootCertificates, validatedFrosinoneIssuer] });
+  if (!chainTrusted) throw new Error("issuer_not_signed_by_trusted_root");
+  validatedFrosinoneIssuers = issuers;
+  return new https.Agent({ca: [...tls.rootCertificates, ...issuers]});
 }
 
 async function fetchFrosinoneWithValidatedTls(url, options) {
