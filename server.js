@@ -402,6 +402,11 @@ app.post("/frosinone-html", async (req, res) => {
     return res.status(502).json({
       ok: false, error: err?.name === "AbortError" ? "official_timeout" : "official_fetch_failed",
       upstreamCode, certificate,
+      failureStage: [
+        "trusted_digicert_issuer_url_missing", "issuer_download_failed",
+        "issuer_certificate_invalid_size", "issuer_not_signed_by_trusted_root",
+        "issuer_probe_timeout", "unexpected_listing_response",
+      ].includes(String(err?.message)) ? err.message : "other",
     });
   } finally {
     clearTimeout(timer);
