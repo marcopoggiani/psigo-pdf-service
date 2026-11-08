@@ -1,6 +1,7 @@
 import express from "express";
 import pdf from "pdf-parse";
 import fetch from "node-fetch";
+import tls from "node:tls";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -252,6 +253,27 @@ app.post("/parse", async (req, res) => {
  * No arbitrary URLs, no redirects, no HTML scripts executed.
  * Body: {"page":1}  (1..3)
  */
+// Certificate inspection for diagnosis only: never use this connection to
+// fetch a page. A real page request must always have valid TLS verification.
+function inspectFrosinoneCertificate() {
+  return new Promise((resolve) => {
+    const socket = tls.connect({
+      host:"www.asl.fr.it",port:443,servername:"www.asl.fr.it",
+      rejectUnauthorized:false,timeout:5000,
+    }, () => {
+      const c=socket.getPeerCertificate(true);
+      resolve({
+        issuer: c?.issuer?.O || c?.issuer?.CN || null,
+        aia: String(c?.infoAccess?.["CA Issuers - URI"] || "").slice(0,300),
+        validTo: c?.valid_to || null,
+      });
+      socket.end();
+    });
+    socket.on("error",() => resolve({error:"tls_inspection_failed"}));
+    socket.on("timeout",() => {socket.destroy();resolve({error:"tls_inspection_timeout"});});
+  });
+}
+
 app.post("/frosinone-html", async (req, res) => {
   if (!SERVICE_SECRET) {
     return res.status(503).json({ ok: false, error: "bridge_secret_not_configured" });
@@ -302,9 +324,11 @@ app.post("/frosinone-html", async (req, res) => {
     // Never include URLs, certificates, credentials or response bodies.
     const upstreamCode = String(err?.code || err?.cause?.code || "UNKNOWN").slice(0, 45);
     console.error("[psigo-frosinone-bridge]", err?.name || "fetch_error", upstreamCode);
+    const certificate = upstreamCode === "UNABLE_TO_VERIFY_LEAF_SIGNATURE"
+      ? await inspectFrosinoneCertificate() : null;
     return res.status(502).json({
       ok: false, error: err?.name === "AbortError" ? "official_timeout" : "official_fetch_failed",
-      upstreamCode,
+      upstreamCode, certificate,
     });
   } finally {
     clearTimeout(timer);
