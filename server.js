@@ -298,9 +298,13 @@ app.post("/frosinone-html", async (req, res) => {
     res.set("Cache-Control", "no-store");
     return res.json({ ok: true, url, page, html });
   } catch (err) {
-    console.error("[psigo-frosinone-bridge]", err?.name || "fetch_error");
+    // Expose only the technical error code to authenticated consumers.
+    // Never include URLs, certificates, credentials or response bodies.
+    const upstreamCode = String(err?.code || err?.cause?.code || "UNKNOWN").slice(0, 45);
+    console.error("[psigo-frosinone-bridge]", err?.name || "fetch_error", upstreamCode);
     return res.status(502).json({
       ok: false, error: err?.name === "AbortError" ? "official_timeout" : "official_fetch_failed",
+      upstreamCode,
     });
   } finally {
     clearTimeout(timer);
