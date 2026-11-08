@@ -2,6 +2,8 @@ import express from "express";
 import pdf from "pdf-parse";
 import fetch from "node-fetch";
 import tls from "node:tls";
+import https from "node:https";
+import { X509Certificate } from "node:crypto";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -274,6 +276,77 @@ function inspectFrosinoneCertificate() {
   });
 }
 
+// The ASL currently serves a leaf certificate without its DigiCert issuer.
+// We fetch the issuer from the certificate AIA and verify its signature against
+// a ROOT ALREADY TRUSTED by Node. This is not a TLS verification bypass.
+// The resulting agent still verifies the server hostname and leaf certificate.
+let validatedFrosinoneIssuer = null;
+async function frosinoneVerifiedAgent() {
+  if (validatedFrosinoneIssuer) {
+    return new https.Agent({ ca: [...tls.rootCertificates, validatedFrosinoneIssuer] });
+  }
+  const peer = await new Promise((resolve, reject) => {
+    const socket = tls.connect({
+      host: "www.asl.fr.it", port: 443,
+      servername: "www.asl.fr.it", rejectUnauthorized: false, timeout: 6000,
+    }, () => {
+      const certificate = socket.getPeerCertificate(true);
+      socket.end();
+      resolve(certificate);
+    });
+    socket.on("error", reject);
+    socket.on("timeout", () => {
+      socket.destroy();
+      reject(new Error("issuer_probe_timeout"));
+    });
+  });
+  const aiaRaw = String(peer?.infoAccess?.["CA Issuers - URI"] || "");
+  const aiaUrl = aiaRaw.match(/https?:\/\/cacerts\.digicert\.com\/[A-Za-z0-9_.-]+\.crt/i)?.[0];
+  if (!aiaUrl) throw new Error("trusted_digicert_issuer_url_missing");
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 7000);
+  let der;
+  try {
+    const response = await fetch(aiaUrl, {
+      redirect: "error", signal: controller.signal,
+      headers: { Accept: "application/pkix-cert,application/octet-stream" },
+    });
+    if (!response.ok ||
+        Number(response.headers.get("content-length") || 0) > 100000) {
+      throw new Error("issuer_download_failed");
+    }
+    der = Buffer.from(await response.arrayBuffer());
+    if (der.length > 100000 || der.length < 250)
+      throw new Error("issuer_certificate_invalid_size");
+  } finally {
+    clearTimeout(timer);
+  }
+  const issuer = new X509Certificate(der);
+  const rootIsTrusted = tls.rootCertificates.some((pem) => {
+    try {
+      const root = new X509Certificate(pem);
+      return root.checkIssued(issuer) && issuer.verify(root.publicKey);
+    } catch { return false; }
+  });
+  if (!rootIsTrusted || !issuer.ca) {
+    throw new Error("issuer_not_signed_by_trusted_root");
+  }
+  validatedFrosinoneIssuer = issuer.toString();
+  return new https.Agent({ ca: [...tls.rootCertificates, validatedFrosinoneIssuer] });
+}
+
+async function fetchFrosinoneWithValidatedTls(url, options) {
+  try {
+    return await fetch(url, options);
+  } catch (error) {
+    if (error?.code !== "UNABLE_TO_VERIFY_LEAF_SIGNATURE") throw error;
+    // Retry ONLY after verifying the missing intermediate back to a trusted
+    // public CA root, never by disabling TLS verification.
+    const agent = await frosinoneVerifiedAgent();
+    return await fetch(url, {...options, agent});
+  }
+}
+
 app.post("/frosinone-html", async (req, res) => {
   if (!SERVICE_SECRET) {
     return res.status(503).json({ ok: false, error: "bridge_secret_not_configured" });
@@ -292,7 +365,7 @@ app.post("/frosinone-html", async (req, res) => {
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
-    const response = await fetch(url, {
+    const response = await fetchFrosinoneWithValidatedTls(url, {
       redirect: "error",
       signal: controller.signal,
       headers: {
