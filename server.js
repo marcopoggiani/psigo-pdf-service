@@ -430,6 +430,72 @@ app.post("/frosinone-html", async (req, res) => {
   }
 });
 
+
+/**
+ * POST /rieti-html
+ * Fixed official ASL Rieti HTML listings. NOT a generic URL fetcher.
+ * Body: {"section":"concorsi"} or {"section":"avvisi"}.
+ * Protected by the pre-existing PDF_SERVICE_SECRET.
+ * This route never disables TLS verification, never follows redirects,
+ * does not accept arbitrary URLs and never modifies external data.
+ */
+const RIETI_OFFICIAL_ROUTES = Object.freeze({
+  concorsi: "https://asl.rieti.it/bandi-e-concorsi/avvisi-e-concorsi/",
+  avvisi: "https://asl.rieti.it/bandi-e-concorsi/avvisi/",
+});
+app.post("/rieti-html", async (req, res) => {
+  if (!SERVICE_SECRET) {
+    return res.status(503).json({ok:false,error:"bridge_secret_not_configured"});
+  }
+  if (req.headers["x-psigo-secret"] !== SERVICE_SECRET) {
+    return res.status(401).json({ok:false,error:"Unauthorized"});
+  }
+  const data = req.body;
+  if (!data || typeof data !== "object" || Array.isArray(data) ||
+      Object.keys(data).length !== 1 || typeof data.section !== "string" ||
+      !Object.hasOwn(RIETI_OFFICIAL_ROUTES,data.section)) {
+    return res.status(400).json({ok:false,error:"invalid_section"});
+  }
+  const section=data.section;
+  const url=RIETI_OFFICIAL_ROUTES[section];
+  const controller=new AbortController();
+  const timer=setTimeout(()=>controller.abort(),15000);
+  try {
+    const response=await fetch(url,{
+      method:"GET",redirect:"error",signal:controller.signal,
+      headers:{
+        "User-Agent":"Mozilla/5.0 (compatible; PsiGo/1.0; +https://psigo.it)",
+        "Accept":"text/html,application/xhtml+xml;q=0.9",
+        "Accept-Language":"it-IT,it;q=0.9",
+      },
+    });
+    if(!response.ok)return res.status(502).json({
+      ok:false,error:"official_http_error",upstreamStatus:response.status,
+    });
+    const type=response.headers.get("content-type")||"";
+    if(!/text\/html|application\/xhtml\+xml/i.test(type))
+      return res.status(502).json({ok:false,error:"unexpected_content_type"});
+    const reported=Number(response.headers.get("content-length")||0);
+    if(reported>800000)
+      return res.status(502).json({ok:false,error:"source_too_large"});
+    const html=await response.text();
+    if(html.length>800000 || !/Bandi\s*(?:e|&amp;|&#038;)\s*Concorsi|Concorsi\s*e\s*selezioni/i.test(html))
+      return res.status(502).json({ok:false,error:"unexpected_listing_response"});
+    const accordionCount=(html.match(/e-n-accordion-item-title-text|elementor-tab-title/g)||[]).length;
+    if(accordionCount<1)
+      return res.status(502).json({ok:false,error:"no_accordion_records"});
+    res.set("Cache-Control","no-store");
+    return res.json({ok:true,section,html,accordionCount});
+  }catch(err){
+    const code=String(err?.code||err?.cause?.code||"UNKNOWN").slice(0,45);
+    console.error("[psigo-rieti-bridge]",err?.name||"fetch_error",code);
+    return res.status(502).json({
+      ok:false,error:err?.name==="AbortError"?"official_timeout":"official_fetch_failed",
+      upstreamCode:code,
+    });
+  }finally{clearTimeout(timer)}
+});
+
 app.listen(PORT, () => {
   console.log(`PsiGo PDF Service running on port ${PORT}`);
 });
