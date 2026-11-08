@@ -241,6 +241,72 @@ app.post("/parse", async (req, res) => {
   }
 });
 
+/**
+ * POST /frosinone-html
+ *
+ * A tightly scoped HTML bridge for the ASL Frosinone official competition
+ * archive. Needed because direct Supabase egress fails during SSL handshake.
+ *
+ * This is NOT a general proxy: only the fixed official archive is fetched.
+ * Requires the existing PDF_SERVICE_SECRET, even if /parse is unauthenticated.
+ * No arbitrary URLs, no redirects, no HTML scripts executed.
+ * Body: {"page":1}  (1..3)
+ */
+app.post("/frosinone-html", async (req, res) => {
+  if (!SERVICE_SECRET) {
+    return res.status(503).json({ ok: false, error: "bridge_secret_not_configured" });
+  }
+  if (req.headers["x-psigo-secret"] !== SERVICE_SECRET) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
+  const page = req.body?.page ?? 1;
+  if (!Number.isInteger(page) || page < 1 || page > 3 ||
+      Object.keys(req.body || {}).some((key) => key !== "page")) {
+    return res.status(400).json({ ok: false, error: "invalid_page" });
+  }
+  const url = page === 1
+    ? "https://www.asl.fr.it/bandi/bandi-di-concorso/"
+    : `https://www.asl.fr.it/bandi/bandi-di-concorso/pagina/${page}/`;
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 15000);
+  try {
+    const response = await fetch(url, {
+      redirect: "error",
+      signal: controller.signal,
+      headers: {
+        "User-Agent": "Mozilla/5.0 (compatible; PsiGo/1.0; +https://psigo.it)",
+        "Accept": "text/html,application/xhtml+xml;q=0.9",
+        "Accept-Language": "it-IT,it;q=0.9",
+      },
+    });
+    if (!response.ok) {
+      return res.status(502).json({
+        ok: false, error: "official_http_error", upstreamStatus: response.status,
+      });
+    }
+    const type = response.headers.get("content-type") || "";
+    if (!/text\/html|application\/xhtml\+xml/i.test(type)) {
+      return res.status(502).json({ ok: false, error: "unexpected_content_type" });
+    }
+    if (Number(response.headers.get("content-length") || "0") > 800000) {
+      return res.status(502).json({ ok: false, error: "source_too_large" });
+    }
+    const html = await response.text();
+    if (html.length > 800000 || !/bandi\s+di\s+concorso/i.test(html.replace(/<[^>]+>/g, " "))) {
+      return res.status(502).json({ ok: false, error: "unexpected_listing_response" });
+    }
+    res.set("Cache-Control", "no-store");
+    return res.json({ ok: true, url, page, html });
+  } catch (err) {
+    console.error("[psigo-frosinone-bridge]", err?.name || "fetch_error");
+    return res.status(502).json({
+      ok: false, error: err?.name === "AbortError" ? "official_timeout" : "official_fetch_failed",
+    });
+  } finally {
+    clearTimeout(timer);
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`PsiGo PDF Service running on port ${PORT}`);
 });
