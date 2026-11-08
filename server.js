@@ -457,41 +457,48 @@ app.post("/rieti-html", async (req, res) => {
     return res.status(400).json({ok:false,error:"invalid_section"});
   }
   const section=data.section;
-  const url=RIETI_OFFICIAL_ROUTES[section];
-  const controller=new AbortController();
-  const timer=setTimeout(()=>controller.abort(),15000);
+  const source=RIETI_OFFICIAL_ROUTES[section];
+  const path=new URL(source).pathname;
+  const origins=["https://asl.rieti.it","https://www.asl.rieti.it"];
+  const controllers=origins.map(()=>new AbortController());
+  const timer=setTimeout(()=>controllers.forEach(x=>x.abort()),13000);
   try {
-    const response=await fetch(url,{
-      method:"GET",redirect:"error",signal:controller.signal,
-      headers:{
-        "User-Agent":"Mozilla/5.0 (compatible; PsiGo/1.0; +https://psigo.it)",
-        "Accept":"text/html,application/xhtml+xml;q=0.9",
-        "Accept-Language":"it-IT,it;q=0.9",
-      },
-    });
-    if(!response.ok)return res.status(502).json({
-      ok:false,error:"official_http_error",upstreamStatus:response.status,
-    });
-    const type=response.headers.get("content-type")||"";
-    if(!/text\/html|application\/xhtml\+xml/i.test(type))
-      return res.status(502).json({ok:false,error:"unexpected_content_type"});
-    const reported=Number(response.headers.get("content-length")||0);
-    if(reported>800000)
-      return res.status(502).json({ok:false,error:"source_too_large"});
-    const html=await response.text();
-    if(html.length>800000 || !/Bandi\s*(?:e|&amp;|&#038;)\s*Concorsi|Concorsi\s*e\s*selezioni/i.test(html))
-      return res.status(502).json({ok:false,error:"unexpected_listing_response"});
-    const accordionCount=(html.match(/e-n-accordion-item-title-text|elementor-tab-title/g)||[]).length;
-    if(accordionCount<1)
-      return res.status(502).json({ok:false,error:"no_accordion_records"});
+    const attempt=async (origin,index) => {
+      const response=await fetch(origin+path,{
+        method:"GET",redirect:"error",signal:controllers[index].signal,
+        headers:{
+          "User-Agent":"Mozilla/5.0 (compatible; PsiGo/1.0; +https://psigo.it)",
+          "Accept":"text/html,application/xhtml+xml;q=0.9",
+          "Accept-Language":"it-IT,it;q=0.9",
+        },
+      });
+      if(!response.ok)throw new Error("official_http_"+response.status);
+      const type=response.headers.get("content-type")||"";
+      if(!/text\/html|application\/xhtml\+xml/i.test(type))
+        throw new Error("unexpected_content_type");
+      if(Number(response.headers.get("content-length")||"0")>800000)
+        throw new Error("source_too_large");
+      const html=await response.text();
+      if(html.length>800000 ||
+         !/Bandi\s*(?:e|&amp;|&#038;)\s*Concorsi|Concorsi\s*e\s*selezioni/i.test(html))
+        throw new Error("unexpected_listing_response");
+      const count=(html.match(/<details\b[^>]*class=["'][^"']*\be-n-accordion-item\b/gi)||[]).length;
+      if(count<1)throw new Error("no_accordion_records");
+      return {html,count,origin};
+    };
+    // Try both public, official hosts concurrently; never follow redirects.
+    const result=await Promise.any(origins.map(attempt));
+    controllers.forEach(x=>x.abort());
     res.set("Cache-Control","no-store");
-    return res.json({ok:true,section,html,accordionCount});
+    return res.json({ok:true,section,html:result.html,
+      accordionCount:result.count,origin:result.origin});
   }catch(err){
-    const code=String(err?.code||err?.cause?.code||"UNKNOWN").slice(0,45);
-    console.error("[psigo-rieti-bridge]",err?.name||"fetch_error",code);
+    const failures=Array.isArray(err?.errors)?err.errors:[err];
+    const reason=failures.map(x=>String(x?.code||x?.cause?.code||x?.message||"UNKNOWN")
+      .replace(/[^a-zA-Z0-9_]/g,"_").slice(0,60)).slice(0,2);
+    console.error("[psigo-rieti-bridge]",reason);
     return res.status(502).json({
-      ok:false,error:err?.name==="AbortError"?"official_timeout":"official_fetch_failed",
-      upstreamCode:code,
+      ok:false,error:"official_fetch_failed",upstreamCodes:reason,
     });
   }finally{clearTimeout(timer)}
 });
