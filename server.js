@@ -253,7 +253,8 @@ app.post("/parse", async (req, res) => {
  * This is NOT a general proxy: only the fixed official archive is fetched.
  * Requires the existing PDF_SERVICE_SECRET, even if /parse is unauthenticated.
  * No arbitrary URLs, no redirects, no HTML scripts executed.
- * Body: {"page":1}  (1..3)
+ * Body: {"page":1} (1..3) OR {"slug":"official-article-slug"}.
+ * A slug is restricted to exactly one official article under the archive.
  */
 // Certificate inspection for diagnosis only: never use this connection to
 // fetch a page. A real page request must always have valid TLS verification.
@@ -364,14 +365,19 @@ app.post("/frosinone-html", async (req, res) => {
   if (req.headers["x-psigo-secret"] !== SERVICE_SECRET) {
     return res.status(401).json({ ok: false, error: "Unauthorized" });
   }
-  const page = req.body?.page ?? 1;
-  if (!Number.isInteger(page) || page < 1 || page > 3 ||
-      Object.keys(req.body || {}).some((key) => key !== "page")) {
-    return res.status(400).json({ ok: false, error: "invalid_page" });
+  const slug = req.body?.slug;
+  const hasSlug = slug !== undefined;
+  const page = req.body?.page ?? (hasSlug ? null : 1);
+  if (hasSlug
+    ? (typeof slug !== "string" || !/^[a-z0-9]+(?:-[a-z0-9]+)*$/.test(slug) ||
+       slug.length > 280 || Object.keys(req.body || {}).some((k) => k !== "slug"))
+    : (!Number.isInteger(page) || page < 1 || page > 3 ||
+       Object.keys(req.body || {}).some((k) => k !== "page"))) {
+    return res.status(400).json({ ok: false, error: "invalid_listing_or_detail" });
   }
-  const url = page === 1
-    ? "https://www.asl.fr.it/bandi/bandi-di-concorso/"
-    : `https://www.asl.fr.it/bandi/bandi-di-concorso/pagina/${page}/`;
+  const root = "https://www.asl.fr.it/bandi/bandi-di-concorso/";
+  const url = hasSlug ? root + slug + "/"
+    : page === 1 ? root : root + "pagina/" + page + "/";
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 15000);
   try {
@@ -397,11 +403,12 @@ app.post("/frosinone-html", async (req, res) => {
       return res.status(502).json({ ok: false, error: "source_too_large" });
     }
     const html = await response.text();
-    if (html.length > 800000 || !/bandi\s+di\s+concorso/i.test(html.replace(/<[^>]+>/g, " "))) {
+    const plain = html.replace(/<[^>]+>/g, " ");
+    if (html.length > 800000 || !/bandi\s+di\s+concorso/i.test(plain)) {
       return res.status(502).json({ ok: false, error: "unexpected_listing_response" });
     }
     res.set("Cache-Control", "no-store");
-    return res.json({ ok: true, url, page, html });
+    return res.json({ ok: true, url, page, slug: hasSlug ? slug : null, html });
   } catch (err) {
     // Expose only the technical error code to authenticated consumers.
     // Never include URLs, certificates, credentials or response bodies.
