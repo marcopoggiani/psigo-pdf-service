@@ -503,6 +503,72 @@ app.post("/rieti-html", async (req, res) => {
   }finally{clearTimeout(timer)}
 });
 
+/**
+ * POST /lazio-hospital-html
+ * Fixed institution-only HTML bridge for PsiGo hospitals whose HTTPS portals
+ * may be inaccessible from Supabase. No dynamic hosts, no arbitrary URLs.
+ * SECURITY: pre-existing x-psigo-secret required; HTTPS validation intact.
+ * Body: {"source":"umberto1"|"santandrea","page":1|2|3}.
+ * This DOES NOT authorize importing/publishing any notice.
+ */
+const HOSPITAL_HTML_ROOTS = Object.freeze({
+  umberto1: "https://www.policlinicoumberto1.it/bandi-di-concorso/",
+  santandrea: "https://concorsi.ospedalesantandrea.it/",
+});
+app.post("/lazio-hospital-html", async (req, res) => {
+  if (!SERVICE_SECRET) {
+    return res.status(503).json({ ok:false, error:"bridge_secret_not_configured" });
+  }
+  if (req.headers["x-psigo-secret"] !== SERVICE_SECRET) {
+    return res.status(401).json({ ok:false, error:"Unauthorized" });
+  }
+  const body=req.body;
+  if (!body || typeof body !== "object" || Array.isArray(body) ||
+      Object.keys(body).some(k=>!["source","page"].includes(k)) ||
+      !Object.hasOwn(HOSPITAL_HTML_ROOTS,body.source) ||
+      !Number.isInteger(body.page) || body.page<1 || body.page>3) {
+    return res.status(400).json({ ok:false, error:"invalid_hospital_request" });
+  }
+  const {source,page}=body;
+  const root=HOSPITAL_HTML_ROOTS[source];
+  const pageUrl=source==="umberto1"
+    ? root+(page===1?"":"?pagenumber="+page)
+    : root+(page===1?"":"?page="+page);
+  const controller=new AbortController();
+  const timeout=setTimeout(()=>controller.abort(),15000);
+  try {
+    const response=await fetch(pageUrl,{
+      method:"GET",redirect:"error",signal:controller.signal,
+      headers:{
+        "User-Agent":"Mozilla/5.0 (compatible; PsiGo/1.0; +https://psigo.it)",
+        Accept:"text/html,application/xhtml+xml;q=0.9",
+        "Accept-Language":"it-IT,it;q=0.9",
+      },
+    });
+    if (!response.ok) return res.status(502).json({
+      ok:false,error:"official_http_error",upstreamStatus:response.status
+    });
+    if (!/text\/html|application\/xhtml\+xml/i.test(response.headers.get("content-type")||""))
+      return res.status(502).json({ok:false,error:"unexpected_content_type"});
+    if(Number(response.headers.get("content-length")||"0")>1100000)
+      return res.status(502).json({ok:false,error:"source_too_large"});
+    const html=await response.text();
+    if(html.length>1100000 || !/<html\b/i.test(html) ||
+      (source==="umberto1" && !/Bandi di concorso|Atti relativi ai Bandi di concorso/i.test(html)) ||
+      (source==="santandrea" && !/Concorsi e Selezioni|Concorsi e selezioni/i.test(html)))
+      return res.status(502).json({ok:false,error:"unexpected_official_response"});
+    res.set("Cache-Control","no-store");
+    return res.json({ok:true,source,page,url:pageUrl,html});
+  } catch(err) {
+    const reason=String(err?.code||err?.cause?.code||err?.name||"UNKNOWN")
+      .replace(/[^A-Za-z0-9_]/g,"_").slice(0,50);
+    console.error("[psigo-hospital-html]",source,page,reason);
+    return res.status(502).json({ok:false,error:"official_fetch_failed",upstreamCode:reason});
+  } finally {
+    clearTimeout(timeout);
+  }
+});
+
 app.listen(PORT, () => {
   console.log(`PsiGo PDF Service running on port ${PORT}`);
 });
