@@ -689,13 +689,15 @@ app.post("/lazio-municipal-html",async (req,res)=>{
     return res.status(401).json({ok:false,error:"Unauthorized"});
   const b=req.body;
   if(!b||typeof b!=="object"||Array.isArray(b)||
-     Object.keys(b).some(k=>!["source","contentId"].includes(k))||
+     Object.keys(b).some(k=>!["source","contentId","page"].includes(k))||
      b.source!=="roma_capitale"||
-     (b.contentId!==undefined&&!/^BEC\d{5,12}$/.test(b.contentId)))
+     (b.contentId!==undefined&&!/^BEC\d{5,12}$/.test(b.contentId))||
+     (b.contentId!==undefined&&b.page!==undefined)||
+     (b.page!==undefined&&(!Number.isInteger(b.page)||b.page<1||b.page>3)))
     return res.status(400).json({ok:false,error:"municipal_request_invalid"});
   const officialUrl=b.contentId
    ? "https://www.comune.roma.it/web/it/bando-concorso.page?contentId="+b.contentId
-   : "https://www.comune.roma.it/web/it/bandi-e-concorsi.page?tipo=selezioni";
+   : "https://www.comune.roma.it/web/it/bandi-e-concorsi.page?"+(b.page&&b.page>1?"pagina="+b.page+"&":"")+"tipo=selezioni";
   const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),15000);
   try{
     const resp=await fetch(officialUrl,{
@@ -716,7 +718,7 @@ app.post("/lazio-municipal-html",async (req,res)=>{
       return res.status(502).json({ok:false,error:"unrecognized_municipal_html"});
     res.set("Cache-Control","no-store");
     return res.json({ok:true,source:"roma_capitale",contentId:b.contentId||null,
-      url:officialUrl,html});
+      url:officialUrl,page:b.contentId?null:(b.page||1),html});
   }catch(e){
     const code=String(e?.cause?.code||e?.code||e?.name||"unknown")
       .replace(/[^a-zA-Z0-9_]/g,"").slice(0,45);
