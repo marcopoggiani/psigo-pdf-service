@@ -724,6 +724,47 @@ app.post("/lazio-municipal-html",async (req,res)=>{
   }finally{clearTimeout(timer)}
 });
 
+// Official-source discovery only. No arbitrary URL input, no publication.
+// The handlers share SERVICE_SECRET and never disable TLS verification.
+const MUNICIPAL_DISCOVERY_URLS=Object.freeze({
+  comune_viterbo:"https://comune.viterbo.it/novita/?tipo=avvisi",
+  comune_latina:"https://servizi.comune.latina.it/ServiziOnLine/AmministrazioneTrasparente/AmministrazioneTrasparente?idsezioneam=70",
+  comune_rieti:"https://www.comune.rieti.it/",
+});
+app.post("/lazio-municipal-discovery",async(req,res)=>{
+ if(!SERVICE_SECRET)return res.status(503).json({ok:false,error:"bridge_secret_missing"});
+ if(req.headers["x-psigo-secret"]!==SERVICE_SECRET)
+  return res.status(401).json({ok:false,error:"Unauthorized"});
+ const b=req.body;
+ if(!b||typeof b!=="object"||Array.isArray(b)||
+    Object.keys(b).some(k=>k!=="source")||
+    !Object.hasOwn(MUNICIPAL_DISCOVERY_URLS,b.source))
+  return res.status(400).json({ok:false,error:"unknown_official_source"});
+ const url=MUNICIPAL_DISCOVERY_URLS[b.source];
+ const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),16000);
+ try{
+  const resp=await fetch(url,{
+   redirect:"error",signal:ctl.signal,
+   headers:{"User-Agent":"Mozilla/5.0 (compatible; PsiGoOfficialCollector/1.0; +https://psigo.it)",
+    "Accept":"text/html,application/xhtml+xml;q=0.9","Accept-Language":"it-IT,it;q=0.9"}
+  });
+  if(!resp.ok)return res.status(502).json({ok:false,source:b.source,error:"official_http_"+resp.status});
+  if(!/text\/html/i.test(resp.headers.get("content-type")||""))
+   return res.status(502).json({ok:false,source:b.source,error:"unrecognized_type"});
+  if(Number(resp.headers.get("content-length")||0)>760000)
+   return res.status(502).json({ok:false,source:b.source,error:"too_large"});
+  const html=await resp.text();
+  if(html.length>760000||!/<html\b/i.test(html))
+   return res.status(502).json({ok:false,source:b.source,error:"invalid_html"});
+  res.set("Cache-Control","no-store");
+  return res.json({ok:true,source:b.source,url,html});
+ }catch(e){
+  const code=String(e?.cause?.code||e?.code||e?.name||"unknown")
+   .replace(/[^A-Za-z0-9_]/g,"").slice(0,44);
+  return res.status(502).json({ok:false,source:b.source,error:"official_fetch_failed",upstreamCode:code});
+ }finally{clearTimeout(timer)}
+});
+
 app.listen(PORT, () => {
   console.log(`PsiGo PDF Service running on port ${PORT}`);
 });
