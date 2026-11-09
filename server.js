@@ -681,6 +681,49 @@ app.post("/lazio-hospital-html", async (req, res) => {
   }
 });
 
+// Dedicated fixed-host municipal source bridge. This is NOT a generic proxy.
+// It allows only Roma Capitale official list and BEC detail pages.
+app.post("/lazio-municipal-html",async (req,res)=>{
+  if(!SERVICE_SECRET)return res.status(503).json({ok:false,error:"bridge_secret_missing"});
+  if(req.headers["x-psigo-secret"]!==SERVICE_SECRET)
+    return res.status(401).json({ok:false,error:"Unauthorized"});
+  const b=req.body;
+  if(!b||typeof b!=="object"||Array.isArray(b)||
+     Object.keys(b).some(k=>!["source","contentId"].includes(k))||
+     b.source!=="roma_capitale"||
+     (b.contentId!==undefined&&!/^BEC\d{5,12}$/.test(b.contentId)))
+    return res.status(400).json({ok:false,error:"municipal_request_invalid"});
+  const officialUrl=b.contentId
+   ? "https://www.comune.roma.it/web/it/bando-concorso.page?contentId="+b.contentId
+   : "https://www.comune.roma.it/web/it/bandi-e-concorsi.page?tipo=selezioni";
+  const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),15000);
+  try{
+    const resp=await fetch(officialUrl,{
+      redirect:"error",signal:ctl.signal,
+      headers:{"User-Agent":"Mozilla/5.0 (compatible; PsiGoOfficialCollector/1.0; +https://psigo.it)",
+       "Accept":"text/html,application/xhtml+xml;q=0.9",
+       "Accept-Language":"it-IT,it;q=0.9"}
+    });
+    if(!resp.ok)return res.status(502).json({ok:false,error:"official_http_"+resp.status});
+    if(!/text\/html/i.test(resp.headers.get("content-type")||""))
+      return res.status(502).json({ok:false,error:"unexpected_municipal_type"});
+    if(Number(resp.headers.get("content-length")||0)>520000)
+      return res.status(502).json({ok:false,error:"municipal_html_too_large"});
+    const html=await resp.text();
+    if(html.length>520000||!/<html\b/i.test(html)||
+       (!b.contentId&&!html.includes("Faccette-results"))||
+       (b.contentId&&!html.includes(b.contentId)))
+      return res.status(502).json({ok:false,error:"unrecognized_municipal_html"});
+    res.set("Cache-Control","no-store");
+    return res.json({ok:true,source:"roma_capitale",contentId:b.contentId||null,
+      url:officialUrl,html});
+  }catch(e){
+    const code=String(e?.cause?.code||e?.code||e?.name||"unknown")
+      .replace(/[^a-zA-Z0-9_]/g,"").slice(0,45);
+    return res.status(502).json({ok:false,error:"municipal_fetch_failed",upstreamCode:code});
+  }finally{clearTimeout(timer)}
+});
+
 app.listen(PORT, () => {
   console.log(`PsiGo PDF Service running on port ${PORT}`);
 });
