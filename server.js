@@ -621,17 +621,30 @@ app.post("/lazio-hospital-html", async (req, res) => {
     return res.status(401).json({ ok:false, error:"Unauthorized" });
   }
   const body=req.body;
-  if (!body || typeof body !== "object" || Array.isArray(body) ||
-      Object.keys(body).some(k=>!["source","page"].includes(k)) ||
-      !Object.hasOwn(HOSPITAL_HTML_ROOTS,body.source) ||
-      !Number.isInteger(body.page) || body.page<1 || body.page>3) {
-    return res.status(400).json({ ok:false, error:"invalid_hospital_request" });
+  const detail=typeof body?.detailPath==="string";
+  if(!body || typeof body!=="object" || Array.isArray(body) ||
+     !Object.hasOwn(HOSPITAL_HTML_ROOTS,body.source) ||
+     Object.keys(body).some(k=>!["source","page","detailPath"].includes(k)) ||
+     (detail && body.page!==undefined) ||
+     (!detail && (!Number.isInteger(body.page)||body.page<1||body.page>3))) {
+    return res.status(400).json({ok:false,error:"invalid_hospital_request"});
   }
-  const {source,page}=body;
+  const {source}=body;
+  const page=detail?null:body.page;
   const root=HOSPITAL_HTML_ROOTS[source];
-  const pageUrl=source==="umberto1"
-    ? root+(page===1?"":"?pagenumber="+page)
-    : root+(page===1?"":"?page="+page);
+  let pageUrl;
+  if(detail){
+    const path=body.detailPath;
+    const ok=source==="umberto1"
+      ? /^\/bando-concorso\/[a-z0-9]+(?:-[a-z0-9]+)*\/?$/.test(path)&&path.length<470
+      : /^\/[a-z0-9]+(?:-[a-z0-9]+)*\/?$/.test(path)&&path.length<350;
+    if(!ok)return res.status(400).json({ok:false,error:"invalid_hospital_detail_path"});
+    pageUrl=new URL(path,new URL(root).origin).href;
+  }else{
+    pageUrl=source==="umberto1"
+      ? root+(page===1?"":"?pagenumber="+page)
+      : root+(page===1?"":"?page="+page);
+  }
   const controller=new AbortController();
   const timeout=setTimeout(()=>controller.abort(),15000);
   try {
@@ -652,11 +665,11 @@ app.post("/lazio-hospital-html", async (req, res) => {
       return res.status(502).json({ok:false,error:"source_too_large"});
     const html=await response.text();
     if(html.length>1100000 || !/<html\b/i.test(html) ||
-      (source==="umberto1" && !/Bandi di concorso|Atti relativi ai Bandi di concorso/i.test(html)) ||
-      (source==="santandrea" && !/Concorsi e Selezioni|Concorsi e selezioni/i.test(html)))
+      (!detail && source==="umberto1" && !/Bandi di concorso|Atti relativi ai Bandi di concorso/i.test(html)) ||
+      (!detail && source==="santandrea" && !/Concorsi e Selezioni|Concorsi e selezioni/i.test(html)))
       return res.status(502).json({ok:false,error:"unexpected_official_response"});
     res.set("Cache-Control","no-store");
-    return res.json({ok:true,source,page,url:pageUrl,html});
+    return res.json({ok:true,source,page,detailPath:detail?body.detailPath:null,url:pageUrl,html});
   } catch(err) {
     const reason=String(err?.code||err?.cause?.code||err?.message||err?.name||"UNKNOWN")
       .replace(/[^A-Za-z0-9_]/g,"_").slice(0,50);
