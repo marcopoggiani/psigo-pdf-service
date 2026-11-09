@@ -515,6 +515,26 @@ const HOSPITAL_HTML_ROOTS = Object.freeze({
   umberto1: "https://www.policlinicoumberto1.it/bandi-di-concorso/",
   santandrea: "https://concorsi.ospedalesantandrea.it/",
 });
+// Diagnostic only: inspect a fixed official TLS peer, without requesting
+// website content or accepting arbitrary hosts. Never used for validation.
+async function inspectHospitalCertificate(source) {
+  const host=new URL(HOSPITAL_HTML_ROOTS[source]).hostname;
+  return new Promise(resolve => {
+    const socket=tls.connect({host,port:443,servername:host,
+      rejectUnauthorized:false,timeout:4500},()=>{
+      const cert=socket.getPeerCertificate(true);
+      resolve({
+        issuer:String(cert?.issuer?.O||cert?.issuer?.CN||"").slice(0,85),
+        aia:String(cert?.infoAccess?.["CA Issuers - URI"]||"").slice(0,300),
+        validTo:String(cert?.valid_to||"").slice(0,60),
+      });
+      socket.end();
+    });
+    socket.on("error",()=>resolve({error:"peer_inspection_failed"}));
+    socket.on("timeout",()=>{socket.destroy();resolve({error:"peer_inspection_timeout"})});
+  });
+}
+
 app.post("/lazio-hospital-html", async (req, res) => {
   if (!SERVICE_SECRET) {
     return res.status(503).json({ ok:false, error:"bridge_secret_not_configured" });
@@ -563,7 +583,8 @@ app.post("/lazio-hospital-html", async (req, res) => {
     const reason=String(err?.code||err?.cause?.code||err?.name||"UNKNOWN")
       .replace(/[^A-Za-z0-9_]/g,"_").slice(0,50);
     console.error("[psigo-hospital-html]",source,page,reason);
-    return res.status(502).json({ok:false,error:"official_fetch_failed",upstreamCode:reason});
+    return res.status(502).json({ok:false,error:"official_fetch_failed",upstreamCode:reason,
+      certificate:reason==="UNABLE_TO_VERIFY_LEAF_SIGNATURE" ? await inspectHospitalCertificate(source) : null});
   } finally {
     clearTimeout(timeout);
   }
