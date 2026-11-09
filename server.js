@@ -568,7 +568,7 @@ async function hospitalVerifiedAgent(source) {
     if(!["https:","http:"].includes(issuerUrl.protocol) ||
       !HOSPITAL_CA_HOSTS.has(issuerUrl.hostname) ||
       issuerUrl.username || issuerUrl.password || issuerUrl.port ||
-      !/\.(?:crt|cer|der)(?:$|\?)/i.test(issuerUrl.pathname))
+      issuerUrl.pathname.length<2 || issuerUrl.pathname.length>250 || issuerUrl.hash)
       throw Error("hospital_issuer_url_not_allowlisted");
     const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),6500);
     let certificateData;
