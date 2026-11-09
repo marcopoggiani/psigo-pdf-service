@@ -535,6 +535,84 @@ async function inspectHospitalCertificate(source) {
   });
 }
 
+// Recover only demonstrably missing intermediates from trusted CA hosts.
+// Each certificate's signature must chain to a Node built-in trusted root;
+// this NEVER switches off TLS verification for HTTP content requests.
+const HOSPITAL_CA_HOSTS = new Set([
+  "secure.globalsign.com",
+  "cacert.actalis.it",
+]);
+const hospitalVerifiedAgents = new Map();
+async function hospitalVerifiedAgent(source) {
+  if (hospitalVerifiedAgents.has(source)) return hospitalVerifiedAgents.get(source);
+  const host=new URL(HOSPITAL_HTML_ROOTS[source]).hostname;
+  const peer=await new Promise((resolve,reject)=>{
+    const socket=tls.connect({host,port:443,servername:host,
+      rejectUnauthorized:false,timeout:5000},()=>{
+      const cert=socket.getPeerCertificate(true);
+      socket.end();resolve(cert);
+    });
+    socket.on("error",reject);
+    socket.on("timeout",()=>{socket.destroy();reject(Error("hospital_issuer_probe_timeout"))});
+  });
+  if(!peer?.raw)throw Error("hospital_certificate_unavailable");
+  const roots=tls.rootCertificates.map(pem=>new X509Certificate(pem));
+  const issuers=[];
+  let child=new X509Certificate(peer.raw);
+  let accessInfo=String(peer.infoAccess?.["CA Issuers - URI"]||"");
+  let trusted=false;
+  for(let depth=0;depth<4;depth++){
+    const raw=accessInfo.match(/https?:\/\/[^\s<>;,]+/i)?.[0];
+    if(!raw)throw Error("hospital_issuer_url_missing");
+    const issuerUrl=new URL(raw);
+    if(!["https:","http:"].includes(issuerUrl.protocol) ||
+      !HOSPITAL_CA_HOSTS.has(issuerUrl.hostname) ||
+      issuerUrl.username || issuerUrl.password || issuerUrl.port ||
+      !/\.(?:crt|cer|der)(?:$|\?)/i.test(issuerUrl.pathname))
+      throw Error("hospital_issuer_url_not_allowlisted");
+    const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),6500);
+    let certificateData;
+    try{
+      const r=await fetch(issuerUrl.href,{
+        method:"GET",redirect:"error",signal:ctl.signal,
+        headers:{Accept:"application/pkix-cert,application/octet-stream,*/*;q=0.1"}
+      });
+      if(!r.ok || Number(r.headers.get("content-length")||0)>100000)
+        throw Error("hospital_issuer_download_failed");
+      certificateData=Buffer.from(await r.arrayBuffer());
+      if(certificateData.length<250||certificateData.length>100000)
+        throw Error("hospital_issuer_invalid_length");
+    }finally{clearTimeout(timer)}
+    const issuer=new X509Certificate(certificateData);
+    if(!issuer.ca || !child.checkIssued(issuer) ||
+       !child.verify(issuer.publicKey))
+      throw Error("hospital_issuer_signature_mismatch");
+    const now=Date.now();
+    if(Date.parse(issuer.validFrom)>now || Date.parse(issuer.validTo)<now)
+      throw Error("hospital_issuer_expired");
+    issuers.push(issuer.toString());
+    trusted=roots.some(root=>
+      (issuer.fingerprint256===root.fingerprint256) ||
+      (issuer.checkIssued(root) && issuer.verify(root.publicKey)));
+    if(trusted)break;
+    child=issuer;
+    accessInfo=String(issuer.infoAccess||"");
+  }
+  if(!trusted)throw Error("hospital_issuer_not_trusted");
+  const agent=new https.Agent({ca:[...tls.rootCertificates,...issuers],
+    rejectUnauthorized:true});
+  hospitalVerifiedAgents.set(source,agent);
+  return agent;
+}
+async function fetchVerifiedHospitalHtml(url,source,options) {
+  try{return await fetch(url,options)}
+  catch(e){
+    if(String(e?.code||e?.cause?.code)!=="UNABLE_TO_VERIFY_LEAF_SIGNATURE")throw e;
+    const agent=await hospitalVerifiedAgent(source);
+    return fetch(url,{...options,agent});
+  }
+}
+
 app.post("/lazio-hospital-html", async (req, res) => {
   if (!SERVICE_SECRET) {
     return res.status(503).json({ ok:false, error:"bridge_secret_not_configured" });
@@ -557,7 +635,7 @@ app.post("/lazio-hospital-html", async (req, res) => {
   const controller=new AbortController();
   const timeout=setTimeout(()=>controller.abort(),15000);
   try {
-    const response=await fetch(pageUrl,{
+    const response=await fetchVerifiedHospitalHtml(pageUrl,source,{
       method:"GET",redirect:"error",signal:controller.signal,
       headers:{
         "User-Agent":"Mozilla/5.0 (compatible; PsiGo/1.0; +https://psigo.it)",
@@ -580,7 +658,7 @@ app.post("/lazio-hospital-html", async (req, res) => {
     res.set("Cache-Control","no-store");
     return res.json({ok:true,source,page,url:pageUrl,html});
   } catch(err) {
-    const reason=String(err?.code||err?.cause?.code||err?.name||"UNKNOWN")
+    const reason=String(err?.code||err?.cause?.code||err?.message||err?.name||"UNKNOWN")
       .replace(/[^A-Za-z0-9_]/g,"_").slice(0,50);
     console.error("[psigo-hospital-html]",source,page,reason);
     return res.status(502).json({ok:false,error:"official_fetch_failed",upstreamCode:reason,
