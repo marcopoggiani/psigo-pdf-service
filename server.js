@@ -215,11 +215,17 @@ app.post("/parse", async (req, res) => {
     const embeddedText = (data.text || "")
       .replace(/\s+/g, " ")
       .trim();
+    const ocrStarted = Date.now();
     const extracted = await ocrPdfIfNeeded(downloaded.buffer, {
       text: embeddedText,
       pages: data.numpages || null,
       mode: ocr,
     });
+    if (ocr === "auto") {
+      console.log("[psigo-pdf-service] OCR status:", extracted.ocr.status,
+        "reason:", extracted.ocr.reason || "none",
+        "elapsedMs:", Date.now() - ocrStarted);
+    }
     const text = extracted.text;
 
     console.log(
