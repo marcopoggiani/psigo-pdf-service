@@ -9,8 +9,8 @@ const MAX_PAGES = 6;
 const MAX_INPUT = 25 * 1024 * 1024;
 const MAX_TEXT = 190_000;
 const MAX_OUTPUT = 300_000;
-const MAX_DIMENSION = 1700;
-const PROCESS_TIMEOUT_MS = 20_000;
+const MAX_DIMENSION = 1300;
+const PROCESS_TIMEOUT_MS = 26_000;
 let running = false;
 
 function run(binary, args, { timeoutMs = PROCESS_TIMEOUT_MS } = {}) {
@@ -83,16 +83,16 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
       const output = join(dir, "page-" + i);
       await run("pdftoppm", [
         "-f", String(i), "-l", String(i), "-singlefile",
-        "-scale-to", String(MAX_DIMENSION), "-png", "-r", "140", input, output,
+        "-scale-to", String(MAX_DIMENSION), "-gray", "-r", "120", input, output,
       ]);
-      const png = output + ".png";
-      const extracted = await run("tesseract", [png, "stdout", "-l", "ita+eng", "--psm", "3"], {
+      const image = output + ".pgm";
+      const extracted = await run("tesseract", [image, "stdout", "-l", "ita+eng", "--psm", "3"], {
         timeoutMs: PROCESS_TIMEOUT_MS,
       });
       const normalized = extracted.replace(/\s+/g, " ").trim();
       pageTexts.push(normalized);
       if (pageTexts.join(" ").length > MAX_TEXT) throw new Error("ocr_text_limit");
-      await rm(png, { force: true });
+      await rm(image, { force: true });
     }
     const recognized = pageTexts.join(" ").replace(/\s+/g, " ").trim();
     if (!recognized || recognized.length < 40) {
