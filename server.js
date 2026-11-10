@@ -452,13 +452,14 @@ app.post("/frosinone-html", async (req, res) => {
 /**
  * POST /rieti-html
  * Fixed official ASL Rieti HTML listings. NOT a generic URL fetcher.
- * Body: {"section":"concorsi"} or {"section":"avvisi"}.
+ * Body: {"section":"concorsi"|"concorsi_2026"|"avvisi"}.
  * Protected by the pre-existing PDF_SERVICE_SECRET.
  * This route never disables TLS verification, never follows redirects,
  * does not accept arbitrary URLs and never modifies external data.
  */
 const RIETI_OFFICIAL_ROUTES = Object.freeze({
   concorsi: "https://asl.rieti.it/bandi-e-concorsi/avvisi-e-concorsi/",
+  concorsi_2026: "https://www.asl.rieti.it/bandi-e-concorsi/avvisi-e-concorsi/concorsi-e-selezioni-2026/",
   avvisi: "https://asl.rieti.it/bandi-e-concorsi/avvisi/",
 });
 app.post("/rieti-html", async (req, res) => {
