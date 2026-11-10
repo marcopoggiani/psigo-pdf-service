@@ -4,6 +4,7 @@ import fetch from "node-fetch";
 import tls from "node:tls";
 import https from "node:https";
 import { X509Certificate } from "node:crypto";
+import { ocrPdfIfNeeded } from "./ocr.mjs";
 
 const app = express();
 app.use(express.json({ limit: "10mb" }));
@@ -160,6 +161,7 @@ async function downloadPdf(url, referer = "") {
  *   url: "https://...",
  *   referer?: "https://pagina-che-contiene-il-link/..."
  *   pdf_base64?: string // alternative when the source blocks Render egress
+ *   ocr?: "off" | "auto" // opt-in; existing calls remain unchanged
  * }
  * Headers: x-psigo-secret: <segreto opzionale>
  *
@@ -172,7 +174,10 @@ app.post("/parse", async (req, res) => {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
 
-    const { url, referer = "", pdf_base64 } = req.body || {};
+    const { url, referer = "", pdf_base64, ocr = "off" } = req.body || {};
+    if (ocr !== "off" && ocr !== "auto") {
+      return res.status(400).json({ ok: false, error: "Invalid OCR mode" });
+    }
     const hasInline = pdf_base64 !== undefined && pdf_base64 !== null;
     if (hasInline && !SERVICE_SECRET) {
       return res.status(503).json({ ok: false, error: "Inline PDF requires PDF_SERVICE_SECRET" });
@@ -207,9 +212,15 @@ app.post("/parse", async (req, res) => {
 
     const data = await pdf(downloaded.buffer);
 
-    const text = (data.text || "")
+    const embeddedText = (data.text || "")
       .replace(/\s+/g, " ")
       .trim();
+    const extracted = await ocrPdfIfNeeded(downloaded.buffer, {
+      text: embeddedText,
+      pages: data.numpages || null,
+      mode: ocr,
+    });
+    const text = extracted.text;
 
     console.log(
       "[psigo-pdf-service] Extracted text length:",
@@ -225,6 +236,7 @@ app.post("/parse", async (req, res) => {
       text,
       pages: data.numpages || null,
       info: data.info || null,
+      ocr: extracted.ocr,
       fetch: {
         mode: downloaded.fetchMode,
         contentType: downloaded.contentType || null,
