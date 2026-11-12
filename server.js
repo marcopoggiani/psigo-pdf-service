@@ -3,7 +3,7 @@ import pdf from "pdf-parse";
 import fetch from "node-fetch";
 import tls from "node:tls";
 import https from "node:https";
-import { X509Certificate } from "node:crypto";
+import { X509Certificate, createHash } from "node:crypto";
 import { ocrPdfIfNeeded } from "./ocr.mjs";
 
 const app = express();
@@ -254,6 +254,7 @@ app.post("/parse", async (req, res) => {
       pages: data.numpages || null,
       info: data.info || null,
       ocr: extracted.ocr,
+      ...(ocr === "chunk" ? { pdfSha256: createHash("sha256").update(downloaded.buffer).digest("hex") } : {}),
       fetch: {
         mode: downloaded.fetchMode,
         contentType: downloaded.contentType || null,
