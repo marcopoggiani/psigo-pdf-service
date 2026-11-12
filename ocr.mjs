@@ -14,6 +14,7 @@ const MAX_INPUT = 25 * 1024 * 1024;
 const MAX_TEXT = 190_000;
 const MAX_OUTPUT = 300_000;
 const MAX_DIMENSION = 1300;
+const FAST_DIMENSION = 900;
 const PROCESS_TIMEOUT_MS = 26_000;
 let running = false;
 
@@ -105,6 +106,8 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
   if (running) return { text: embedded, ocr: { status: "busy" } };
   running = true;
   let dir;
+  const pageTexts = [];
+  let stage = "initializing";
   const deadline = Date.now() + (smart ? SMART_TOTAL_TIMEOUT_MS : extended ? EXTENDED_TOTAL_TIMEOUT_MS : Number.POSITIVE_INFINITY);
   const remainingTimeout = () => {
     const remaining = deadline - Date.now();
@@ -115,18 +118,22 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
     dir = await mkdtemp(join(tmpdir(), "psigo-ocr-"));
     const input = join(dir, "source.pdf");
     await writeFile(input, buffer, { mode: 0o600 });
-    const pageTexts = [];
     let earlyStopped = false;
     for (let i = 1; i <= pageCount; i++) {
       const output = join(dir, "page-" + i);
+      const tuned = smart || extended;
+      stage = "rasterize_page_" + i;
       await run("pdftoppm", [
         "-f", String(i), "-l", String(i), "-singlefile",
-        "-scale-to", String(MAX_DIMENSION), "-gray", "-r", "120", input, output,
+        "-scale-to", String(tuned ? FAST_DIMENSION : MAX_DIMENSION),
+        "-gray", "-r", tuned ? "96" : "120", input, output,
       ], { timeoutMs: remainingTimeout() });
       const image = output + ".pgm";
-      const extracted = await run("tesseract", [image, "stdout", "-l", "ita+eng", "--psm", "3"], {
-        timeoutMs: remainingTimeout(),
-      });
+      stage = "recognize_page_" + i;
+      const extracted = await run("tesseract", [
+        image, "stdout", "-l", tuned ? "ita" : "ita+eng",
+        "--psm", tuned ? "6" : "3",
+      ], { timeoutMs: remainingTimeout() });
       const normalized = extracted.replace(/\s+/g, " ").trim();
       pageTexts.push(normalized);
       if (pageTexts.join(" ").length > MAX_TEXT) throw new Error("ocr_text_limit");
@@ -156,7 +163,18 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
   } catch (error) {
     const reason = error?.code === "ENOENT" ? "ocr_binary_unavailable" :
       String(error?.message || "ocr_failed").split(":")[0].slice(0, 80);
-    return { text: embedded, ocr: { status: "failed", reason } };
+    if (smart) {
+      const recognized = pageTexts.join(" ").replace(/\s+/g, " ").trim();
+      const partial = [embedded, recognized].filter(Boolean).join(" ");
+      // Discovery can resume diagnostics after timeout, but never publish
+      // from an incomplete document. Preserve progress without claiming proof.
+      return { text: partial, ocr: {
+        status: "discovery_incomplete", reason, stage, complete: false,
+        pagesTotal: pageCount, pagesProcessed: pageTexts.length,
+        fieldsFound: detectPsychologistEvidence(partial),
+      } };
+    }
+    return { text: embedded, ocr: { status: "failed", reason, stage } };
   } finally {
     running = false;
     if (dir) await rm(dir, { recursive: true, force: true }).catch(() => {});
