@@ -83,3 +83,13 @@ test("quality rescan cannot exceed document page count", async () => {
   });
   assert.equal(result.ocr.status, "invalid_chunk_range");
 });
+
+test("chunk mode uses complete embedded text without OCR rasterization", async () => {
+  const text = "Avviso per psicologi con requisiti professionali. ".repeat(65);
+  const result = await ocrPdfIfNeeded(mockPdf, { text, pages: 13,
+    mode: "chunk", startPage: 1, pageLimit: 2 });
+  assert.equal(result.ocr.status, "embedded_complete");
+  assert.equal(result.ocr.complete, true);
+  assert.equal(result.ocr.endPage, 13);
+  assert.equal(result.text, text.trim());
+});
