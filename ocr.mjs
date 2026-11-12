@@ -107,6 +107,9 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
   }
   if (chunk && startPage > pageCount)
     return {text:"",ocr:{status:"invalid_chunk_range",pagesTotal:pageCount}};
+  if (pageCount > maxPages || !Buffer.isBuffer(buffer) || buffer.length > MAX_INPUT) {
+    return { text: embedded, ocr: { status: "limits_exceeded", pages: pageCount, maxPages } };
+  }
   if (embedded.length >= Math.max(140, pageCount * 90) && embedded.length <= MAX_TEXT) {
     if (chunk) return { text: embedded, ocr: {
       status: "embedded_complete", complete: true,
@@ -120,9 +123,7 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
       fieldsFound: detectPsychologistEvidence(embedded) } };
     return { text: embedded, ocr: { status: "not_needed" } };
   }
-  if (pageCount > maxPages || !Buffer.isBuffer(buffer) || buffer.length > MAX_INPUT) {
-    return { text: embedded, ocr: { status: "limits_exceeded", pages: pageCount, maxPages } };
-  }
+
   if (running) return { text: embedded, ocr: { status: "busy" } };
   running = true;
   let dir;
