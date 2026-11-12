@@ -175,8 +175,13 @@ app.post("/parse", async (req, res) => {
     }
 
     const { url, referer = "", pdf_base64, ocr = "off" } = req.body || {};
-    if (ocr !== "off" && ocr !== "auto") {
+    if (ocr !== "off" && ocr !== "auto" && ocr !== "extended") {
       return res.status(400).json({ ok: false, error: "Invalid OCR mode" });
+    }
+    // Extended full-document OCR is an explicitly authenticated opt-in.
+    // The default mode remains capped at six pages.
+    if (ocr === "extended" && (!SERVICE_SECRET || req.headers["x-psigo-secret"] !== SERVICE_SECRET)) {
+      return res.status(403).json({ ok: false, error: "Extended OCR requires service authentication" });
     }
     const hasInline = pdf_base64 !== undefined && pdf_base64 !== null;
     if (hasInline && !SERVICE_SECRET) {
@@ -221,7 +226,7 @@ app.post("/parse", async (req, res) => {
       pages: data.numpages || null,
       mode: ocr,
     });
-    if (ocr === "auto") {
+    if (ocr === "auto" || ocr === "extended") {
       console.log("[psigo-pdf-service] OCR status:", extracted.ocr.status,
         "reason:", extracted.ocr.reason || "none",
         "elapsedMs:", Date.now() - ocrStarted);
