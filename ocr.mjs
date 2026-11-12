@@ -134,9 +134,9 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
     let earlyStopped = false;
     for (let i = chunk ? startPage : 1; i <= (chunk ? Math.min(pageCount, startPage + pageLimit - 1) : pageCount); i++) {
       const output = join(dir, "page-" + i);
+      const tuned = smart || extended || chunk;
       const maxDim = highQuality ? 1700 : tuned ? FAST_DIMENSION : MAX_DIMENSION;
       const dpi = highQuality ? "175" : tuned ? "96" : "120";
-      const tuned = smart || extended || chunk;
       stage = "rasterize_page_" + i;
       await run("pdftoppm", [
         "-f", String(i), "-l", String(i), "-singlefile",
