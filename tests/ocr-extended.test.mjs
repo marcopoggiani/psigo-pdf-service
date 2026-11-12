@@ -70,3 +70,16 @@ test("chunk OCR rejects documents over thirty pages", async () => {
   assert.equal(result.ocr.status, "limits_exceeded");
   assert.equal(result.ocr.maxPages, 30);
 });
+
+test("high-quality chunk refuses multiple pages and does not process partial", async () => {
+  const result = await ocrPdfIfNeeded(mockPdf, {
+    text: "", pages: 13, mode: "chunk", startPage: 1, pageLimit: 2, quality: "high",
+  });
+  assert.equal(result.ocr.status, "invalid_chunk_range");
+});
+test("quality rescan cannot exceed document page count", async () => {
+  const result = await ocrPdfIfNeeded(mockPdf, {
+    text: "", pages: 13, mode: "chunk", startPage: 14, pageLimit: 1, quality: "high",
+  });
+  assert.equal(result.ocr.status, "invalid_chunk_range");
+});
