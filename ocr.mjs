@@ -6,6 +6,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 
 const MAX_PAGES = 6;
+const MAX_EXTENDED_PAGES = 14;
+const EXTENDED_TOTAL_TIMEOUT_MS = 95000;
 const MAX_INPUT = 25 * 1024 * 1024;
 const MAX_TEXT = 190_000;
 const MAX_OUTPUT = 300_000;
@@ -54,26 +56,35 @@ function run(binary, args, { timeoutMs = PROCESS_TIMEOUT_MS } = {}) {
 }
 
 /**
- * OCR only when explicitly requested with {ocr:"auto"} and the PDF has
+ * OCR only when explicitly requested with {ocr:"auto"} or the separately authorized
+ * {ocr:"extended"} for a maximum of 14 pages and 95 seconds. The PDF has
  * insufficient embedded text. Never claim a partial document is verified.
  * An unsuccessful OCR returns the original pdf-parse text untouched.
  */
 export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "off" } = {}) {
   const embedded = String(text || "").replace(/\s+/g, " ").trim();
   const pageCount = Number(pages);
-  if (mode !== "auto") return { text: embedded, ocr: { status: "not_requested" } };
+  const extended = mode === "extended";
+  if (mode !== "auto" && !extended) return { text: embedded, ocr: { status: "not_requested" } };
+  const maxPages = extended ? MAX_EXTENDED_PAGES : MAX_PAGES;
   if (!Number.isInteger(pageCount) || pageCount < 1) {
     return { text: embedded, ocr: { status: "invalid_page_count" } };
   }
   if (embedded.length >= Math.max(140, pageCount * 90)) {
     return { text: embedded, ocr: { status: "not_needed" } };
   }
-  if (pageCount > MAX_PAGES || !Buffer.isBuffer(buffer) || buffer.length > MAX_INPUT) {
-    return { text: embedded, ocr: { status: "limits_exceeded", pages: pageCount, maxPages: MAX_PAGES } };
+  if (pageCount > maxPages || !Buffer.isBuffer(buffer) || buffer.length > MAX_INPUT) {
+    return { text: embedded, ocr: { status: "limits_exceeded", pages: pageCount, maxPages } };
   }
   if (running) return { text: embedded, ocr: { status: "busy" } };
   running = true;
   let dir;
+  const deadline = Date.now() + (extended ? EXTENDED_TOTAL_TIMEOUT_MS : Number.POSITIVE_INFINITY);
+  const remainingTimeout = () => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 1500) throw new Error("ocr_total_timeout");
+    return Math.min(PROCESS_TIMEOUT_MS, remaining);
+  };
   try {
     dir = await mkdtemp(join(tmpdir(), "psigo-ocr-"));
     const input = join(dir, "source.pdf");
@@ -84,10 +95,10 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
       await run("pdftoppm", [
         "-f", String(i), "-l", String(i), "-singlefile",
         "-scale-to", String(MAX_DIMENSION), "-gray", "-r", "120", input, output,
-      ]);
+      ], { timeoutMs: remainingTimeout() });
       const image = output + ".pgm";
       const extracted = await run("tesseract", [image, "stdout", "-l", "ita+eng", "--psm", "3"], {
-        timeoutMs: PROCESS_TIMEOUT_MS,
+        timeoutMs: remainingTimeout(),
       });
       const normalized = extracted.replace(/\s+/g, " ").trim();
       pageTexts.push(normalized);
