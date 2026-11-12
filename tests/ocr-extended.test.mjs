@@ -54,3 +54,19 @@ test("smart detector does not invent a deadline or professional qualifications",
   assert.equal(fields.degree, false);
   assert.equal(fields.register, false);
 });
+
+test("chunk OCR rejects a page index outside the document", async () => {
+  const result = await ocrPdfIfNeeded(mockPdf, { text: "", pages: 13, mode: "chunk", startPage: 14 });
+  assert.equal(result.ocr.status, "invalid_chunk_range");
+});
+
+test("chunk OCR refuses more than two pages per call", async () => {
+  const result = await ocrPdfIfNeeded(mockPdf, { text: "", pages: 13, mode: "chunk", startPage: 1, pageLimit: 3 });
+  assert.equal(result.ocr.status, "invalid_chunk_range");
+});
+
+test("chunk OCR rejects documents over thirty pages", async () => {
+  const result = await ocrPdfIfNeeded(mockPdf, { text: "", pages: 31, mode: "chunk", startPage: 1, pageLimit: 2 });
+  assert.equal(result.ocr.status, "limits_exceeded");
+  assert.equal(result.ocr.maxPages, 30);
+});
