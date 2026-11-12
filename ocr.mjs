@@ -87,17 +87,19 @@ function evidenceComplete(fields) {
  * insufficient embedded text. Never claim a partial document is verified.
  * An unsuccessful OCR returns the original pdf-parse text untouched.
  */
-export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "off", startPage = 1, pageLimit = 2 } = {}) {
+export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "off", startPage = 1, pageLimit = 2, quality = "standard" } = {}) {
   const embedded = String(text || "").replace(/\s+/g, " ").trim();
   const pageCount = Number(pages);
   const extended = mode === "extended";
   const smart = mode === "smart";
   const chunk = mode === "chunk";
+  const highQuality = chunk && quality === "high";
   if (mode !== "auto" && !extended && !smart && !chunk)
     return { text: embedded, ocr: { status: "not_requested" } };
   // Validate requested pagination before starting external OCR binaries.
   if (chunk && (!Number.isInteger(startPage) || startPage < 1 ||
-      !Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > MAX_CHUNK_PAGES))
+      !Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > MAX_CHUNK_PAGES ||
+      !["standard", "high"].includes(quality) || (highQuality && pageLimit !== 1)))
     return {text:"",ocr:{status:"invalid_chunk_range"}};
   const maxPages = chunk ? MAX_CHECKPOINT_PAGES : smart ? MAX_SMART_PAGES : extended ? MAX_EXTENDED_PAGES : MAX_PAGES;
   if (!Number.isInteger(pageCount) || pageCount < 1) {
@@ -133,17 +135,19 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
     for (let i = chunk ? startPage : 1; i <= (chunk ? Math.min(pageCount, startPage + pageLimit - 1) : pageCount); i++) {
       const output = join(dir, "page-" + i);
       const tuned = smart || extended || chunk;
+      const maxDim = highQuality ? 1700 : tuned ? FAST_DIMENSION : MAX_DIMENSION;
+      const dpi = highQuality ? "175" : tuned ? "96" : "120";
       stage = "rasterize_page_" + i;
       await run("pdftoppm", [
         "-f", String(i), "-l", String(i), "-singlefile",
-        "-scale-to", String(tuned ? FAST_DIMENSION : MAX_DIMENSION),
-        "-gray", "-r", tuned ? "96" : "120", input, output,
+        "-scale-to", String(maxDim),
+        "-gray", "-r", dpi, input, output,
       ], { timeoutMs: remainingTimeout() });
       const image = output + ".pgm";
       stage = "recognize_page_" + i;
       const extracted = await run("tesseract", [
-        image, "stdout", "-l", tuned ? "ita" : "ita+eng",
-        "--psm", tuned ? "6" : "3",
+        image, "stdout", "-l", highQuality ? "ita+eng" : tuned ? "ita" : "ita+eng",
+        "--psm", highQuality ? "3" : tuned ? "6" : "3",
       ], { timeoutMs: remainingTimeout() });
       const normalized = extracted.replace(/\s+/g, " ").trim();
       pageTexts.push(normalized);
@@ -161,7 +165,7 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
       // Return deterministic pagination metadata; caller persists each chunk.
       const endPage = Math.min(pageCount,startPage + pageLimit - 1);
       return {text:recognized,ocr:{
-        status:"chunk_completed",complete:endPage===pageCount,
+        status:"chunk_completed",quality:highQuality?"high":"standard",complete:endPage===pageCount,
         pagesTotal:pageCount,startPage,endPage,pagesProcessed:pageTexts.length,
         fieldsFound:detectPsychologistEvidence(recognized),
         engine:"tesseract",languages:"ita",characters:recognized.length,
