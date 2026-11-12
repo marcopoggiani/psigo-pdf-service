@@ -8,6 +8,9 @@ import { join } from "node:path";
 const MAX_PAGES = 6;
 const MAX_EXTENDED_PAGES = 14;
 const MAX_SMART_PAGES = 25;
+const MAX_CHECKPOINT_PAGES = 30;
+const MAX_CHUNK_PAGES = 2;
+const CHUNK_TIMEOUT_MS = 55000;
 const EXTENDED_TOTAL_TIMEOUT_MS = 95000;
 const SMART_TOTAL_TIMEOUT_MS = 90000;
 const MAX_INPUT = 25 * 1024 * 1024;
@@ -84,17 +87,25 @@ function evidenceComplete(fields) {
  * insufficient embedded text. Never claim a partial document is verified.
  * An unsuccessful OCR returns the original pdf-parse text untouched.
  */
-export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "off" } = {}) {
+export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "off", startPage = 1, pageLimit = 2 } = {}) {
   const embedded = String(text || "").replace(/\s+/g, " ").trim();
   const pageCount = Number(pages);
   const extended = mode === "extended";
   const smart = mode === "smart";
-  if (mode !== "auto" && !extended && !smart) return { text: embedded, ocr: { status: "not_requested" } };
-  const maxPages = smart ? MAX_SMART_PAGES : extended ? MAX_EXTENDED_PAGES : MAX_PAGES;
+  const chunk = mode === "chunk";
+  if (mode !== "auto" && !extended && !smart && !chunk)
+    return { text: embedded, ocr: { status: "not_requested" } };
+  // Validate requested pagination before starting external OCR binaries.
+  if (chunk && (!Number.isInteger(startPage) || startPage < 1 ||
+      !Number.isInteger(pageLimit) || pageLimit < 1 || pageLimit > MAX_CHUNK_PAGES))
+    return {text:"",ocr:{status:"invalid_chunk_range"}};
+  const maxPages = chunk ? MAX_CHECKPOINT_PAGES : smart ? MAX_SMART_PAGES : extended ? MAX_EXTENDED_PAGES : MAX_PAGES;
   if (!Number.isInteger(pageCount) || pageCount < 1) {
     return { text: embedded, ocr: { status: "invalid_page_count" } };
   }
-  if (embedded.length >= Math.max(140, pageCount * 90)) {
+  if (chunk && startPage > pageCount)
+    return {text:"",ocr:{status:"invalid_chunk_range",pagesTotal:pageCount}};
+  if (!chunk && embedded.length >= Math.max(140, pageCount * 90)) {
     if (smart) return { text: embedded, ocr: { status: "discovery_embedded_text",
       complete: true, pagesProcessed: 0, pagesTotal: pageCount,
       fieldsFound: detectPsychologistEvidence(embedded) } };
@@ -108,7 +119,7 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
   let dir;
   const pageTexts = [];
   let stage = "initializing";
-  const deadline = Date.now() + (smart ? SMART_TOTAL_TIMEOUT_MS : extended ? EXTENDED_TOTAL_TIMEOUT_MS : Number.POSITIVE_INFINITY);
+  const deadline = Date.now() + (chunk ? CHUNK_TIMEOUT_MS : smart ? SMART_TOTAL_TIMEOUT_MS : extended ? EXTENDED_TOTAL_TIMEOUT_MS : Number.POSITIVE_INFINITY);
   const remainingTimeout = () => {
     const remaining = deadline - Date.now();
     if (remaining <= 1500) throw new Error("ocr_total_timeout");
@@ -119,9 +130,9 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
     const input = join(dir, "source.pdf");
     await writeFile(input, buffer, { mode: 0o600 });
     let earlyStopped = false;
-    for (let i = 1; i <= pageCount; i++) {
+    for (let i = chunk ? startPage : 1; i <= (chunk ? Math.min(pageCount, startPage + pageLimit - 1) : pageCount); i++) {
       const output = join(dir, "page-" + i);
-      const tuned = smart || extended;
+      const tuned = smart || extended || chunk;
       stage = "rasterize_page_" + i;
       await run("pdftoppm", [
         "-f", String(i), "-l", String(i), "-singlefile",
@@ -145,6 +156,17 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
       }
     }
     const recognized = pageTexts.join(" ").replace(/\s+/g, " ").trim();
+    if (chunk) {
+      // A successfully rendered and OCR'd page may have little/no text.
+      // Return deterministic pagination metadata; caller persists each chunk.
+      const endPage = Math.min(pageCount,startPage + pageLimit - 1);
+      return {text:recognized,ocr:{
+        status:"chunk_completed",complete:endPage===pageCount,
+        pagesTotal:pageCount,startPage,endPage,pagesProcessed:pageTexts.length,
+        fieldsFound:detectPsychologistEvidence(recognized),
+        engine:"tesseract",languages:"ita",characters:recognized.length,
+      }};
+    }
     if (!recognized || recognized.length < 40) {
       return { text: embedded, ocr: { status: "no_text_recognized", pages: pageCount } };
     }
@@ -174,6 +196,10 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
         fieldsFound: detectPsychologistEvidence(partial),
       } };
     }
+    if (chunk) return {text:"",ocr:{
+      status:"chunk_failed",reason,stage,complete:false,
+      pagesTotal:pageCount,startPage,pagesProcessed:pageTexts.length,
+    }};
     return { text: embedded, ocr: { status: "failed", reason, stage } };
   } finally {
     running = false;
