@@ -107,7 +107,14 @@ export async function ocrPdfIfNeeded(buffer, { text = "", pages = null, mode = "
   }
   if (chunk && startPage > pageCount)
     return {text:"",ocr:{status:"invalid_chunk_range",pagesTotal:pageCount}};
-  if (!chunk && embedded.length >= Math.max(140, pageCount * 90)) {
+  if (embedded.length >= Math.max(140, pageCount * 90) && embedded.length <= MAX_TEXT) {
+    if (chunk) return { text: embedded, ocr: {
+      status: "embedded_complete", complete: true,
+      pagesTotal: pageCount, pagesProcessed: 0,
+      startPage: 1, endPage: pageCount,
+      fieldsFound: detectPsychologistEvidence(embedded),
+      engine: "pdf-parse", characters: embedded.length,
+    }};
     if (smart) return { text: embedded, ocr: { status: "discovery_embedded_text",
       complete: true, pagesProcessed: 0, pagesTotal: pageCount,
       fieldsFound: detectPsychologistEvidence(embedded) } };
