@@ -52,7 +52,7 @@ export function officialImageUrl(source,value,officialUrl) {
     if(u.protocol!=="https:"||p.protocol!=="https:"||
       u.hostname!==p.hostname||!IMAGE_SOURCE_HOSTS[source].includes(u.hostname)||
       u.username||u.password||u.port||u.hash||u.search||
-      p.username||p.password||p.port||p.hash||
+      p.username||p.password||p.port||
       /%2f|%5c|\\|\.\./i.test(u.pathname)||
       !/\.(png|jpe?g|webp|tiff?|bmp|gif)$/i.test(u.pathname))return null;
     return u;

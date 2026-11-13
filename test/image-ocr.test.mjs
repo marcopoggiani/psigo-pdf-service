@@ -27,6 +27,7 @@ test("blocks private, link-local, loopback and invalid network addresses",()=>{
 test("official source URL must use HTTPS, same host, no token query or redirect host",()=>{
   const source="ordine_lazio_training",page="https://ordinepsicologilazio.it/corsi";
   assert.ok(officialImageUrl(source,"https://ordinepsicologilazio.it/uploads/locandina.jpg",page));
+  assert.ok(officialImageUrl(source,"https://ordinepsicologilazio.it/uploads/locandina.jpg",page+"#section-123"));
   for(const url of ["http://ordinepsicologilazio.it/a.jpg",
     "https://evil.test/a.jpg","https://ordinepsicologilazio.it/a.jpg?token=x",
     "https://ordinepsicologilazio.it/a.svg",
