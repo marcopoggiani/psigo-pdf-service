@@ -20,7 +20,7 @@ const MAX_INLINE_PDF_BYTES = 6 * 1024 * 1024; // base64 fits existing 10mb JSON 
  * GET /  → per testare che il servizio risponde
  */
 app.get("/", (_req, res) => {
-  res.json({ ok: true, service: "PsiGo PDF Service", imageOcr: "official-raster-v1", imageFormats: ["jpeg","png","webp","gif","bmp","tiff"], frosinoneBridge: "verified-aia-v1", hospitalBridge: "fixed-official-v1" });
+  res.json({ ok: true, service: "PsiGo PDF Service", imageOcr: "official-raster-node22-v2", imageFormats: ["jpeg","png","webp","gif","bmp","tiff"], frosinoneBridge: "verified-aia-v1", hospitalBridge: "fixed-official-v1" });
 });
 
 function isHttpUrl(value) {
