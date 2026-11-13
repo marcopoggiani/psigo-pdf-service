@@ -11,6 +11,18 @@ import { join } from "node:path";
 import fetch from "node-fetch";
 
 export const IMAGE_SOURCE_HOSTS = Object.freeze({
+  // Existing official Bandi sources: image support is evidence-only.
+  inpa:["www.inpa.gov.it"],
+  gazzetta_concorsi:["www.gazzetta-concorsi.it"],
+  gazzetta_ufficiale:["www.gazzettaufficiale.it"],
+  regione_lazio_bur:["www.regione.lazio.it"],
+  ministero_giustizia:["www.giustizia.it"],
+  scuola_pilota_ic_borsellino:["icborsellino.edu.it"],
+  ordine_sicilia:["www.oprs.it"],
+  asl_roma_1:["www.aslroma1.it"],
+  sapienza_open_data:["trasparenza.uniroma1.it"],
+  asl_latina:["www.ausl.latina.it"],
+
   ordine_marche_training:["www.ordinepsicologimarche.it"],
   ordine_piemonte_training:["ordinepsicologi.piemonte.it"],
   ordine_puglia_training:["www.psicologipuglia.it"],
