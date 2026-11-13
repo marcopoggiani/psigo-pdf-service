@@ -174,7 +174,7 @@ export async function fetchOfficialImage(source,imageUrl,officialUrl){
   if(!ips.length||ips.some(x=>!publicIp(x.address)))throw Error("source_dns_not_public");
   const target=ips.find(x=>x.family===4)||ips[0];
   const agent=new https.Agent({rejectUnauthorized:true,
-    lookup:(_host,_opts,cb)=>cb(null,target.address,target.family)});
+    lookup:(_host,opts,cb)=>opts?.all ? cb(null,[{address:target.address,family:target.family}]) : cb(null,target.address,target.family)});
   const ctl=new AbortController(),timer=setTimeout(()=>ctl.abort(),14000);
   try{
     const response=await fetch(u.href,{method:"GET",redirect:"manual",agent,
