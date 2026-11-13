@@ -1,3 +1,4 @@
+import { fetchOfficialImage, recognizeImage } from "./image-ocr.mjs";
 import express from "express";
 import pdf from "pdf-parse";
 import fetch from "node-fetch";
@@ -798,6 +799,33 @@ app.post("/lazio-municipal-discovery",async(req,res)=>{
    .replace(/[^A-Za-z0-9_]/g,"").slice(0,44);
   return res.status(502).json({ok:false,source:b.source,error:"official_fetch_failed",upstreamCode:code});
  }finally{clearTimeout(timer)}
+});
+
+
+// Official raster notice OCR: never a generic image proxy or publication service.
+app.post("/parse-image", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  if (!SERVICE_SECRET) return res.status(503).json({ok:false,error:"image_ocr_secret_missing"});
+  if (req.headers["x-psigo-secret"] !== SERVICE_SECRET)
+    return res.status(401).json({ok:false,error:"Unauthorized"});
+  const b = req.body;
+  if (!b || typeof b!=="object" || Array.isArray(b) ||
+      Object.keys(b).some(k=>!["source","url","officialUrl","highQuality"].includes(k)) ||
+      typeof b.source!=="string" || typeof b.url!=="string" ||
+      typeof b.officialUrl!=="string" ||
+      (b.highQuality!==undefined && typeof b.highQuality!=="boolean"))
+    return res.status(400).json({ok:false,error:"invalid_image_request"});
+  try {
+    const fetched=await fetchOfficialImage(b.source,b.url,b.officialUrl);
+    const result=await recognizeImage(fetched.buffer,{highQuality:b.highQuality===true});
+    return res.json({...result,fetch:{bytes:fetched.bytes,mime:fetched.mime},source:b.source});
+  } catch(e) {
+    const error=String(e?.message||"image_ocr_failed");
+    const code=/not_allowlisted|invalid_image_request/.test(error)?400:
+      /ocr_busy/.test(error)?429:/ocr_timeout/.test(error)?504:502;
+    console.error("[psigo-image-ocr]",error.replace(/[^a-z0-9_]/gi,"_").slice(0,80));
+    return res.status(code).json({ok:false,error:error.slice(0,90)});
+  }
 });
 
 app.listen(PORT, () => {
