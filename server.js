@@ -820,7 +820,7 @@ app.post("/parse-image", async (req, res) => {
     const result=await recognizeImage(fetched.buffer,{highQuality:b.highQuality===true});
     return res.json({...result,fetch:{bytes:fetched.bytes,mime:fetched.mime},source:b.source});
   } catch(e) {
-    const error=String(e?.message||"image_ocr_failed");
+    const error=String(e?.code||e?.cause?.code||e?.message||"image_ocr_failed");
     const code=/not_allowlisted|invalid_image_request/.test(error)?400:
       /ocr_busy/.test(error)?429:/ocr_timeout/.test(error)?504:502;
     console.error("[psigo-image-ocr]",error.replace(/[^a-z0-9_]/gi,"_").slice(0,80));
