@@ -1,4 +1,5 @@
 import { fetchOfficialImage, recognizeImage } from "./image-ocr.mjs";
+import { downloadOfficialOrganizerPdf } from "./organizer-pdf.mjs";
 import express from "express";
 import pdf from "pdf-parse";
 import fetch from "node-fetch";
@@ -20,7 +21,7 @@ const MAX_INLINE_PDF_BYTES = 6 * 1024 * 1024; // base64 fits existing 10mb JSON 
  * GET /  → per testare che il servizio risponde
  */
 app.get("/", (_req, res) => {
-  res.json({ ok: true, service: "PsiGo PDF Service", imageOcr: "official-raster-node22-v2", imageFormats: ["jpeg","png","webp","gif","bmp","tiff"], frosinoneBridge: "verified-aia-v1", hospitalBridge: "fixed-official-v1" });
+  res.json({ ok: true, service: "PsiGo PDF Service", imageOcr: "official-raster-node22-v2", imageFormats: ["jpeg","png","webp","gif","bmp","tiff"], frosinoneBridge: "verified-aia-v1", hospitalBridge: "fixed-official-v1", organizerEcmStrict: "dns-pinned-v1" });
 });
 
 function isHttpUrl(value) {
@@ -175,7 +176,13 @@ app.post("/parse", async (req, res) => {
       return res.status(401).json({ ok: false, error: "Unauthorized" });
     }
 
-    const { url, referer = "", pdf_base64, ocr = "off", startPage = 1, pageLimit = 2, quality = "standard" } = req.body || {};
+    const { url, referer = "", pdf_base64, ocr = "off", startPage = 1, pageLimit = 2, quality = "standard", strictSource } = req.body || {};
+    if(strictSource!==undefined && strictSource!=="organizer_ecm_training"){
+      return res.status(400).json({ok:false,error:"Unsupported strictSource"});
+    }
+    if(strictSource && (!SERVICE_SECRET || req.headers["x-psigo-secret"] !== SERVICE_SECRET)){
+      return res.status(403).json({ok:false,error:"Strict organizer PDF parsing requires authentication"});
+    }
     if (ocr !== "off" && ocr !== "auto" && ocr !== "extended" && ocr !== "smart" && ocr !== "chunk") {
       return res.status(400).json({ ok: false, error: "Invalid OCR mode" });
     }
@@ -192,6 +199,9 @@ app.post("/parse", async (req, res) => {
     const hasInline = pdf_base64 !== undefined && pdf_base64 !== null;
     if (hasInline && !SERVICE_SECRET) {
       return res.status(503).json({ ok: false, error: "Inline PDF requires PDF_SERVICE_SECRET" });
+    }
+    if(hasInline && strictSource){
+      return res.status(400).json({ok:false,error:"Strict organizer PDF requires URL"});
     }
     if (hasInline && (url !== undefined || referer !== "")) {
       return res.status(400).json({ ok: false, error: "Choose either url or pdf_base64" });
@@ -218,7 +228,9 @@ app.post("/parse", async (req, res) => {
       downloaded = { buffer, contentType: "application/pdf", finalUrl: null, fetchMode: "trusted_inline_base64" };
     } else {
       console.log("[psigo-pdf-service] Fetching PDF:", url);
-      downloaded = await downloadPdf(url, referer);
+      downloaded = strictSource==="organizer_ecm_training"
+        ?await downloadOfficialOrganizerPdf(url,referer)
+        :await downloadPdf(url, referer);
     }
 
     const data = await pdf(downloaded.buffer);
