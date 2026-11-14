@@ -11,6 +11,16 @@ import { join } from "node:path";
 import fetch from "node-fetch";
 
 export const IMAGE_SOURCE_HOSTS = Object.freeze({
+  // Approved course organizers, strictly same-host as their linked course page.
+  // Used only with authenticated POST /parse-image (source=organizer_ecm_training).
+  organizer_ecm_training:[
+    "psicologilombardia.it","www.psicologilombardia.it",
+    "uniateneo.it","www.uniateneo.it",
+    "nicolettagava.it","www.nicolettagava.it",
+    "istitutomindfulness.it","www.istitutomindfulness.it",
+    "psyeventi.it","www.psyeventi.it",
+  ],
+
   // Existing official Bandi sources: image support is evidence-only.
   inpa:["www.inpa.gov.it"],
   gazzetta_concorsi:["www.gazzetta-concorsi.it"],
