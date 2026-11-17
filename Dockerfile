@@ -10,7 +10,7 @@ RUN apt-get update \
 WORKDIR /app
 COPY package.json package-lock.json ./
 RUN npm ci --omit=dev && npm cache clean --force
-COPY server.js ocr.mjs image-ocr.mjs organizer-pdf.mjs ./
+COPY server.js ocr.mjs image-ocr.mjs organizer-pdf.mjs safe-pdf-fetch.mjs ./
 USER node
 EXPOSE 3000
 CMD ["node", "server.js"]
