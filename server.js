@@ -1,15 +1,16 @@
 import { fetchOfficialImage, recognizeImage } from "./image-ocr.mjs";
 import { downloadOfficialOrganizerPdf } from "./organizer-pdf.mjs";
+import { fetchPublicPdf } from "./safe-pdf-fetch.mjs";
 import express from "express";
 import pdf from "pdf-parse";
 import fetch from "node-fetch";
 import tls from "node:tls";
 import https from "node:https";
-import { X509Certificate, createHash } from "node:crypto";
+import { X509Certificate, createHash, timingSafeEqual } from "node:crypto";
 import { ocrPdfIfNeeded } from "./ocr.mjs";
 
 const app = express();
-app.use(express.json({ limit: "10mb" }));
+app.disable("x-powered-by");
 
 const PORT = process.env.PORT || 3000;
 const SERVICE_SECRET = process.env.PDF_SERVICE_SECRET || "";
@@ -17,11 +18,28 @@ const FETCH_TIMEOUT_MS = 25000;
 const MAX_PDF_BYTES = 25 * 1024 * 1024;
 const MAX_INLINE_PDF_BYTES = 6 * 1024 * 1024; // base64 fits existing 10mb JSON limit
 
+// Authenticate all processing endpoints BEFORE reading a potentially large JSON body.
+// Fail closed if Render is missing its service secret. GET / remains a public health check.
+app.use((req, res, next) => {
+  if (req.method !== "POST") return next();
+  res.set("Cache-Control", "no-store");
+  if (!SERVICE_SECRET) return res.status(503).json({ ok: false, error: "Service authentication unavailable" });
+  const supplied = req.headers["x-psigo-secret"];
+  if (typeof supplied !== "string") return res.status(401).json({ ok: false, error: "Unauthorized" });
+  const expected = Buffer.from(SERVICE_SECRET);
+  const provided = Buffer.from(supplied);
+  if (expected.length !== provided.length || !timingSafeEqual(expected, provided)) {
+    return res.status(401).json({ ok: false, error: "Unauthorized" });
+  }
+  return next();
+});
+app.use(express.json({ limit: "10mb" }));
+
 /**
  * GET /  → per testare che il servizio risponde
  */
 app.get("/", (_req, res) => {
-  res.json({ ok: true, service: "PsiGo PDF Service", imageOcr: "official-raster-node22-v2", imageFormats: ["jpeg","png","webp","gif","bmp","tiff"], frosinoneBridge: "verified-aia-v1", hospitalBridge: "fixed-official-v1", organizerEcmStrict: "dns-pinned-v1" });
+  res.json({ ok: true, service: "PsiGo PDF Service", imageOcr: "official-raster-node22-v2", imageFormats: ["jpeg","png","webp","gif","bmp","tiff"], frosinoneBridge: "verified-aia-v1", hospitalBridge: "fixed-official-v1", organizerEcmStrict: "dns-pinned-v1", networkGuard: "public-dns-pinned-v1" });
 });
 
 function isHttpUrl(value) {
@@ -60,27 +78,10 @@ function browserHeaders(url, referer = "") {
   return headers;
 }
 
-async function fetchWithTimeout(url, headers) {
-  const controller = new AbortController();
-  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
-
-  try {
-    return await fetch(url, {
-      headers,
-      redirect: "follow",
-      signal: controller.signal,
-    });
-  } finally {
-    clearTimeout(timer);
-  }
-}
-
 async function downloadPdf(url, referer = "") {
   const attempts = [];
-
   const firstHeaders = browserHeaders(url, referer);
   attempts.push({ name: "browser_headers", headers: firstHeaders });
-
   try {
     const parsed = new URL(url);
     if (/web\.spaggiari\.eu$/i.test(parsed.hostname)) {
@@ -91,70 +92,30 @@ async function downloadPdf(url, referer = "") {
       }
     }
   } catch {
-    // L'URL è già stato validato prima di arrivare qui.
+    // The secure downloader validates the actual target.
   }
 
   let lastStatus = null;
-  let lastBody = "";
-
   for (const attempt of attempts) {
-    console.log(
-      "[psigo-pdf-service] Fetch attempt:",
-      attempt.name,
-      "referer:",
-      attempt.headers.Referer || "none"
-    );
-
-    const response = await fetchWithTimeout(url, attempt.headers);
+    console.log("[psigo-pdf-service] Fetch attempt:", attempt.name);
+    const response = await fetchPublicPdf(url, attempt.headers, {
+      fetchImpl: fetch, timeoutMs: FETCH_TIMEOUT_MS, maxBytes: MAX_PDF_BYTES,
+    });
     lastStatus = response.status;
-
     if (!response.ok) {
-      lastBody = await response.text().catch(() => "");
-      console.error(
-        "[psigo-pdf-service] Failed fetch attempt:",
-        attempt.name,
-        response.status,
-        lastBody.slice(0, 300)
-      );
+      console.error("[psigo-pdf-service] Failed fetch attempt:", attempt.name, response.status);
       continue;
     }
-
-    const contentLength = Number(response.headers.get("content-length") || 0);
-    if (contentLength > MAX_PDF_BYTES) {
-      throw new Error(`PDF too large: ${contentLength} bytes`);
-    }
-
-    const arrayBuffer = await response.arrayBuffer();
-    if (arrayBuffer.byteLength > MAX_PDF_BYTES) {
-      throw new Error(`PDF too large: ${arrayBuffer.byteLength} bytes`);
-    }
-
-    const buffer = Buffer.from(arrayBuffer);
-    const contentType = response.headers.get("content-type") || "";
+    const { buffer, contentType, finalUrl } = response;
     const looksLikePdf = buffer.length >= 5 && buffer.subarray(0, 5).toString("ascii") === "%PDF-";
-
     if (!looksLikePdf) {
-      const preview = buffer.subarray(0, 300).toString("utf8");
-      console.error(
-        "[psigo-pdf-service] Response is not a PDF:",
-        contentType,
-        preview
-      );
-      lastBody = preview;
+      console.error("[psigo-pdf-service] Response is not a PDF");
       continue;
     }
-
-    return {
-      buffer,
-      contentType,
-      finalUrl: response.url || url,
-      fetchMode: attempt.name,
-    };
+    return { buffer, contentType, finalUrl, fetchMode: attempt.name };
   }
-
-  const statusLabel = lastStatus ? `HTTP ${lastStatus}` : "no response";
-  const detail = lastBody ? ` - ${lastBody.slice(0, 160)}` : "";
-  throw new Error(`Failed to fetch PDF: ${statusLabel}${detail}`);
+  const statusLabel = lastStatus ? "HTTP " + lastStatus : "no response";
+  throw new Error("Failed to fetch PDF: " + statusLabel);
 }
 
 /**
@@ -165,17 +126,13 @@ async function downloadPdf(url, referer = "") {
  *   pdf_base64?: string // alternative when the source blocks Render egress
  *   ocr?: "off" | "auto" // opt-in; existing calls remain unchanged
  * }
- * Headers: x-psigo-secret: <segreto opzionale>
+ * Headers: x-psigo-secret: <segreto obbligatorio>
  *
  * Endpoint usato dalle Edge Function di PsiGo per leggere PDF da URL.
  */
 app.post("/parse", async (req, res) => {
   try {
-    const auth = req.headers["x-psigo-secret"];
-    if (SERVICE_SECRET && auth !== SERVICE_SECRET) {
-      return res.status(401).json({ ok: false, error: "Unauthorized" });
-    }
-
+    // Authentication was checked before JSON parsing by the service middleware.
     const { url, referer = "", pdf_base64, ocr = "off", startPage = 1, pageLimit = 2, quality = "standard", strictSource } = req.body || {};
     if(strictSource!==undefined && strictSource!=="organizer_ecm_training"){
       return res.status(400).json({ok:false,error:"Unsupported strictSource"});
@@ -227,7 +184,7 @@ app.post("/parse", async (req, res) => {
       }
       downloaded = { buffer, contentType: "application/pdf", finalUrl: null, fetchMode: "trusted_inline_base64" };
     } else {
-      console.log("[psigo-pdf-service] Fetching PDF:", url);
+      console.log("[psigo-pdf-service] Fetching PDF");
       downloaded = strictSource==="organizer_ecm_training"
         ?await downloadOfficialOrganizerPdf(url,referer)
         :await downloadPdf(url, referer);
@@ -277,14 +234,14 @@ app.post("/parse", async (req, res) => {
       },
     });
   } catch (err) {
-    console.error("[psigo-pdf-service] error:", err);
-    const message = err?.name === "AbortError"
-      ? `PDF fetch timeout after ${FETCH_TIMEOUT_MS} ms`
-      : err?.message || String(err);
-
-    return res.status(500).json({
-      ok: false,
-      error: message,
+    const rawMessage = String(err?.message || "");
+    const isTimeout = err?.name === "AbortError" || rawMessage === "PDF fetch timeout";
+    const safeMessage = /^(?:unsafe_pdf_url|unsafe_pdf_redirect|pdf_dns_not_public|pdf_dns_host_mismatch|pdf_redirect_limit|PDF too large|Failed to fetch PDF: (?:HTTP [0-9]{3}|no response)|organizer_pdf_[a-z0-9_]+)$/.test(rawMessage);
+    const message = isTimeout ? "PDF fetch timeout after " + FETCH_TIMEOUT_MS + " ms"
+      : safeMessage ? rawMessage : "PDF fetch or parsing failed";
+    console.error("[psigo-pdf-service] parse failed:", message);
+    return res.status(/^unsafe_pdf|^pdf_dns_not_public/.test(message) ? 400 : 500).json({
+      ok: false, error: message,
     });
   }
 });
