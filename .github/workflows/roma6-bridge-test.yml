@@ -1,0 +1,23 @@
+name: Roma 6 bridge safety
+on:
+  pull_request:
+    paths:
+      - server.js
+      - test/roma6-bridge.test.mjs
+      - .github/workflows/roma6-bridge-test.yml
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+      - run: npm ci
+      - run: node --check server.js
+      - run: npm test
