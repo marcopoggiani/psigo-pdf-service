@@ -517,6 +517,7 @@ app.post("/rieti-html", async (req, res) => {
 const HOSPITAL_HTML_ROOTS = Object.freeze({
   umberto1: "https://www.policlinicoumberto1.it/bandi-di-concorso/",
   santandrea: "https://concorsi.ospedalesantandrea.it/",
+  roma6: "https://www.aslroma6.it/bandi-e-concorsi/avvisi-e-concorsi-attivi",
 });
 // Diagnostic only: inspect a fixed official TLS peer, without requesting
 // website content or accepting arbitrary hosts. Never used for validation.
@@ -633,6 +634,10 @@ app.post("/lazio-hospital-html", async (req, res) => {
     return res.status(400).json({ok:false,error:"invalid_hospital_request"});
   }
   const {source}=body;
+  // Roma 6 discovery is deliberately restricted to the verified listing URL.
+  // Pagination/detail path conventions have not been verified yet.
+  if(source==="roma6" && (detail || body.page!==1))
+    return res.status(400).json({ok:false,error:"roma6_only_verified_listing"});
   const page=detail?null:body.page;
   const root=HOSPITAL_HTML_ROOTS[source];
   let pageUrl;
@@ -669,7 +674,8 @@ app.post("/lazio-hospital-html", async (req, res) => {
     const html=await response.text();
     if(html.length>1100000 || !/<html\b/i.test(html) ||
       (!detail && source==="umberto1" && !/Bandi di concorso|Atti relativi ai Bandi di concorso/i.test(html)) ||
-      (!detail && source==="santandrea" && !/Concorsi e Selezioni|Concorsi e selezioni/i.test(html)))
+      (!detail && source==="santandrea" && !/Concorsi e Selezioni|Concorsi e selezioni/i.test(html)) ||
+      (source==="roma6" && !/Avvisi\s+e\s+Concorsi\s+Attivi/i.test(html)))
       return res.status(502).json({ok:false,error:"unexpected_official_response"});
     res.set("Cache-Control","no-store");
     return res.json({ok:true,source,page,detailPath:detail?body.detailPath:null,url:pageUrl,html});
